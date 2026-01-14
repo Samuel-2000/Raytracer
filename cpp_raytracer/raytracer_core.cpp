@@ -511,13 +511,15 @@ PYBIND11_MODULE(raytracer_cpp, m) {
             return "Scene(spheres=" + std::to_string(s.get_spheres().size()) + ")";
         });
     
-    // Bind Camera
+    // Bind Camera - UPDATED to match new struct
     py::class_<Camera>(m, "Camera")
         .def(py::init<>())
         .def_readwrite("position", &Camera::position)
-        .def_readwrite("target", &Camera::target)
-        .def_readwrite("up", &Camera::up)
         .def_readwrite("fov", &Camera::fov)
+        .def_readwrite("aspect_ratio", &Camera::aspect_ratio)
+        .def("update_basis", &Camera::update_basis)
+        .def("get_ray", &Camera::get_ray)
+        .def("move", &Camera::move)
         .def("__repr__", [](const Camera& c) {
             return "Camera(pos=(" + std::to_string(c.position.x) + "," + 
                    std::to_string(c.position.y) + "," + std::to_string(c.position.z) + 
@@ -534,8 +536,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
     public:
         RayTracerWrapper() : tracer(new PathTracer()) {
             camera.position = Vector3(0, 2, 5);
-            camera.target = Vector3(0, 0, -1);
             camera.fov = 45.0f;
+            camera.aspect_ratio = 1.333f;
             camera.update_basis();
         }
         
@@ -555,6 +557,9 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         }
         
         py::array_t<float> render(int width, int height, int samples, int max_depth) {
+            camera.aspect_ratio = static_cast<float>(width) / height;
+            camera.update_basis();
+            
             auto result = py::array_t<float>({height, width, 3});
             auto buf = result.request();
             float* image_data = static_cast<float*>(buf.ptr);
