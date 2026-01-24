@@ -80,30 +80,30 @@ def install_requirements():
 
 def main():
     """Main build and run function"""
-    print("🚀 C++ Ray Tracer - Build and Run")
+    print("C++ Ray Tracer - Build and Run")
     print("=" * 50)
     
     # Check platform
     system = platform.system()
-    print(f"💻 Platform: {system} {platform.machine()}")
-    print(f"🐍 Python: {sys.version}")
+    print(f"Platform: {system} {platform.machine()}")
+    print(f"Python: {sys.version}")
     
     # Install requirements first
     if not install_requirements():
-        print("⚠️  Continuing with build...")
+        print("Continuing with build...")
     
     # Check if C++ extension is already available
     if check_cpp_extension():
-        print("🎯 Starting ray tracer...")
+        print("Starting ray tracer...")
     else:
         # Build the C++ extension
         if not build_cpp_extension():
-            print("💥 Failed to build C++ extension!")
+            print("Failed to build C++ extension!")
             sys.exit(1)
         
         # Verify the build
         if not check_cpp_extension():
-            print("💥 C++ extension still not available after build!")
+            print("C++ extension still not available after build!")
             sys.exit(1)
     
     # Import and run the main application
@@ -114,7 +114,7 @@ def main():
         app = QApplication(sys.argv)
         
         print("\n" + "=" * 50)
-        print("🎮 Starting Interactive Ray Tracer GUI...")
+        print("Starting Interactive Ray Tracer GUI...")
         print("=" * 50)
         
         gui = GUI()
@@ -133,14 +133,14 @@ def main():
 
 
     except ImportError as e:
-        print(f"💥 Failed to import main application: {e}")
+        print(f"Failed to import main application: {e}")
         sys.exit(1)
 
     except KeyboardInterrupt:
-        print("\n👋 Ray tracer stopped by user")
+        print("\nRay tracer stopped by user")
 
     except Exception as e:
-        print(f"💥 Application error: {e}")
+        print(f"Application error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
