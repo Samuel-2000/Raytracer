@@ -3,13 +3,12 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
                              QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox,
-                             QColorDialog, QLineEdit, QFormLayout, QScrollArea)
+                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QGridLayout)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent, QIntValidator
 import cv2
 
 from interaction import RayTracerInteraction, RenderMode
-from cpp_raytracer.raytracer_cpp import Vector3, Material, Sphere
 
 class RenderThread(QThread):
     """Thread for handling rendering updates"""
@@ -145,12 +144,14 @@ class ScrollableTabbedControlPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         
-        # Create tabs
+        # Create tabs - ADD NEW TABS
         self.render_tab = self.create_render_tab()
         self.scene_tab = self.create_scene_tab()
         self.camera_tab = self.create_camera_tab()
         self.object_tab = self.create_object_tab()
         self.material_tab = self.create_material_tab()
+        self.texture_tab = self.create_texture_tab()      # NEW
+        self.skybox_tab = self.create_skybox_tab()        # NEW
         self.denoiser_tab = self.create_denoiser_tab()
         
         # Add tabs
@@ -159,6 +160,8 @@ class ScrollableTabbedControlPanel(QWidget):
         self.tabs.addTab(self.camera_tab, "Camera")
         self.tabs.addTab(self.object_tab, "Object")
         self.tabs.addTab(self.material_tab, "Material")
+        self.tabs.addTab(self.texture_tab, "Texture")     # NEW
+        self.tabs.addTab(self.skybox_tab, "Skybox")       # NEW
         self.tabs.addTab(self.denoiser_tab, "Denoiser")
         
         layout.addWidget(self.tabs)
@@ -554,9 +557,22 @@ class ScrollableTabbedControlPanel(QWidget):
         return tab
     
     def create_material_tab(self):
-        """Create material controls tab"""
+        """Create material controls tab - UPDATED WITH PRESETS"""
         tab = QWidget()
         layout = QVBoxLayout()
+        
+        # Material preset selection
+        preset_group = QGroupBox("Material Preset")
+        preset_layout = QVBoxLayout()
+        
+        self.material_preset = QComboBox()
+        for preset in self.raytracer.get_available_material_presets():
+            self.material_preset.addItem(preset)
+        self.material_preset.currentIndexChanged.connect(self.on_material_preset_changed)
+        preset_layout.addWidget(self.material_preset)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
         
         # Color controls group
         color_group = QGroupBox("Color")
@@ -688,6 +704,202 @@ class ScrollableTabbedControlPanel(QWidget):
         tab.setLayout(layout)
         return tab
     
+    def create_texture_tab(self):
+        """Create texture controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Texture type selection
+        texture_group = QGroupBox("Texture Type")
+        texture_layout = QVBoxLayout()
+        
+        self.texture_type = QComboBox()
+        for tex_type in self.raytracer.get_available_textures():
+            self.texture_type.addItem(tex_type.title())
+        self.texture_type.currentTextChanged.connect(self.on_texture_type_changed)
+        texture_layout.addWidget(self.texture_type)
+        
+        # Texture parameters
+        self.texture_params_widget = QWidget()
+        self.texture_params_layout = QVBoxLayout()
+        self.texture_params_widget.setLayout(self.texture_params_layout)
+        texture_layout.addWidget(self.texture_params_widget)
+        
+        texture_group.setLayout(texture_layout)
+        layout.addWidget(texture_group)
+        
+        # Load texture from file
+        file_group = QGroupBox("Load Texture from File")
+        file_layout = QVBoxLayout()
+        
+        self.texture_file_label = QLabel("No file selected")
+        self.texture_file_label.setStyleSheet("color: #aaa; font-style: italic;")
+        file_layout.addWidget(self.texture_file_label)
+        
+        load_texture_btn = QPushButton("Browse...")
+        load_texture_btn.clicked.connect(self.load_texture_file)
+        file_layout.addWidget(load_texture_btn)
+        
+        apply_texture_btn = QPushButton("Apply Texture to Selected Object")
+        apply_texture_btn.clicked.connect(self.apply_texture)
+        file_layout.addWidget(apply_texture_btn)
+        
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+        
+        # Preset textures
+        preset_group = QGroupBox("Preset Textures")
+        preset_layout = QGridLayout()
+        
+        # Wood
+        wood_btn = QPushButton("Wood")
+        wood_btn.clicked.connect(lambda: self.apply_preset_texture("wood"))
+        preset_layout.addWidget(wood_btn, 0, 0)
+        
+        # Marble
+        marble_btn = QPushButton("Marble")
+        marble_btn.clicked.connect(lambda: self.apply_preset_texture("marble"))
+        preset_layout.addWidget(marble_btn, 0, 1)
+        
+        # Metal
+        metal_btn = QPushButton("Metal")
+        metal_btn.clicked.connect(lambda: self.apply_preset_texture("metal"))
+        preset_layout.addWidget(metal_btn, 1, 0)
+        
+        # Checker
+        checker_btn = QPushButton("Checker")
+        checker_btn.clicked.connect(lambda: self.apply_preset_texture("checker"))
+        preset_layout.addWidget(checker_btn, 1, 1)
+        
+        # Noise
+        noise_btn = QPushButton("Noise")
+        noise_btn.clicked.connect(lambda: self.apply_preset_texture("noise"))
+        preset_layout.addWidget(noise_btn, 2, 0)
+        
+        # Remove texture
+        remove_btn = QPushButton("Remove Texture")
+        remove_btn.clicked.connect(lambda: self.apply_preset_texture("none"))
+        preset_layout.addWidget(remove_btn, 2, 1)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_skybox_tab(self):
+        """Create skybox controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Skybox type selection
+        type_group = QGroupBox("Skybox Type")
+        type_layout = QVBoxLayout()
+        
+        self.skybox_type = QComboBox()
+        for skybox in self.raytracer.get_available_skyboxes():
+            self.skybox_type.addItem(skybox.title())
+        self.skybox_type.currentTextChanged.connect(self.on_skybox_type_changed)
+        type_layout.addWidget(self.skybox_type)
+        
+        type_group.setLayout(type_layout)
+        layout.addWidget(type_group)
+        
+        # Skybox color controls
+        color_group = QGroupBox("Skybox Colors")
+        color_layout = QVBoxLayout()
+        
+        # Color 1
+        color1_layout = QHBoxLayout()
+        color1_layout.addWidget(QLabel("Primary:"))
+        self.skybox_color1_r = QSpinBox()
+        self.skybox_color1_g = QSpinBox()
+        self.skybox_color1_b = QSpinBox()
+        for spinner in [self.skybox_color1_r, self.skybox_color1_g, self.skybox_color1_b]:
+            spinner.setRange(0, 100)
+            spinner.setValue(70)
+            spinner.valueChanged.connect(self.on_skybox_color_changed)
+        color1_layout.addWidget(QLabel("R:"))
+        color1_layout.addWidget(self.skybox_color1_r)
+        color1_layout.addWidget(QLabel("G:"))
+        color1_layout.addWidget(self.skybox_color1_g)
+        color1_layout.addWidget(QLabel("B:"))
+        color1_layout.addWidget(self.skybox_color1_b)
+        color_layout.addLayout(color1_layout)
+        
+        # Color 2
+        color2_layout = QHBoxLayout()
+        color2_layout.addWidget(QLabel("Secondary:"))
+        self.skybox_color2_r = QSpinBox()
+        self.skybox_color2_g = QSpinBox()
+        self.skybox_color2_b = QSpinBox()
+        for spinner in [self.skybox_color2_r, self.skybox_color2_g, self.skybox_color2_b]:
+            spinner.setRange(0, 100)
+            spinner.setValue(90)
+            spinner.valueChanged.connect(self.on_skybox_color_changed)
+        color2_layout.addWidget(QLabel("R:"))
+        color2_layout.addWidget(self.skybox_color2_r)
+        color2_layout.addWidget(QLabel("G:"))
+        color2_layout.addWidget(self.skybox_color2_g)
+        color2_layout.addWidget(QLabel("B:"))
+        color2_layout.addWidget(self.skybox_color2_b)
+        color_layout.addLayout(color2_layout)
+        
+        color_group.setLayout(color_layout)
+        layout.addWidget(color_group)
+        
+        # Load skybox image
+        image_group = QGroupBox("Skybox Image")
+        image_layout = QVBoxLayout()
+        
+        self.skybox_file_label = QLabel("No image loaded")
+        self.skybox_file_label.setStyleSheet("color: #aaa; font-style: italic;")
+        image_layout.addWidget(self.skybox_file_label)
+        
+        load_skybox_btn = QPushButton("Load Skybox Image...")
+        load_skybox_btn.clicked.connect(self.load_skybox_image)
+        image_layout.addWidget(load_skybox_btn)
+        
+        image_group.setLayout(image_layout)
+        layout.addWidget(image_group)
+        
+        # Preset skyboxes
+        preset_group = QGroupBox("Preset Skyboxes")
+        preset_layout = QGridLayout()
+        
+        # Gradient
+        gradient_btn = QPushButton("Gradient")
+        gradient_btn.clicked.connect(lambda: self.apply_preset_skybox("gradient"))
+        preset_layout.addWidget(gradient_btn, 0, 0)
+        
+        # Sunset
+        sunset_btn = QPushButton("Sunset")
+        sunset_btn.clicked.connect(lambda: self.apply_preset_skybox("sunset"))
+        preset_layout.addWidget(sunset_btn, 0, 1)
+        
+        # Atmosphere
+        atmosphere_btn = QPushButton("Atmosphere")
+        atmosphere_btn.clicked.connect(lambda: self.apply_preset_skybox("atmosphere"))
+        preset_layout.addWidget(atmosphere_btn, 1, 0)
+        
+        # Night
+        night_btn = QPushButton("Night")
+        night_btn.clicked.connect(lambda: self.apply_preset_skybox("night"))
+        preset_layout.addWidget(night_btn, 1, 1)
+        
+        # Studio
+        studio_btn = QPushButton("Studio")
+        studio_btn.clicked.connect(lambda: self.apply_preset_skybox("studio"))
+        preset_layout.addWidget(studio_btn, 2, 0)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
     def create_denoiser_tab(self):
         """Create denoiser controls tab"""
         tab = QWidget()
@@ -733,9 +945,223 @@ class ScrollableTabbedControlPanel(QWidget):
         tab.setLayout(layout)
         return tab
     
-    # ------------------------------------------------------------------
-    # Event Handlers
-    # ------------------------------------------------------------------
+    # ==================== NEW EVENT HANDLERS ====================
+    
+    def on_texture_type_changed(self, texture_type):
+        """Handle texture type change - update parameter controls"""
+        # Clear current parameters
+        while self.texture_params_layout.count():
+            item = self.texture_params_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        texture_type = texture_type.lower()
+        
+        if texture_type == "noise":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.noise_scale = QDoubleSpinBox()
+            self.noise_scale.setRange(0.1, 10.0)
+            self.noise_scale.setValue(1.0)
+            self.noise_scale.setSingleStep(0.1)
+            scale_layout.addWidget(self.noise_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "checker":
+            # Scale
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.checker_scale = QDoubleSpinBox()
+            self.checker_scale.setRange(1.0, 50.0)
+            self.checker_scale.setValue(10.0)
+            self.checker_scale.setSingleStep(1.0)
+            scale_layout.addWidget(self.checker_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+            # Color 1
+            color1_layout = QHBoxLayout()
+            color1_layout.addWidget(QLabel("Color 1:"))
+            self.checker_color1_r = QSpinBox()
+            self.checker_color1_g = QSpinBox()
+            self.checker_color1_b = QSpinBox()
+            for spinner in [self.checker_color1_r, self.checker_color1_g, self.checker_color1_b]:
+                spinner.setRange(0, 100)
+                spinner.setValue(90)
+            color1_layout.addWidget(QLabel("R:"))
+            color1_layout.addWidget(self.checker_color1_r)
+            color1_layout.addWidget(QLabel("G:"))
+            color1_layout.addWidget(self.checker_color1_g)
+            color1_layout.addWidget(QLabel("B:"))
+            color1_layout.addWidget(self.checker_color1_b)
+            self.texture_params_layout.addLayout(color1_layout)
+            
+            # Color 2
+            color2_layout = QHBoxLayout()
+            color2_layout.addWidget(QLabel("Color 2:"))
+            self.checker_color2_r = QSpinBox()
+            self.checker_color2_g = QSpinBox()
+            self.checker_color2_b = QSpinBox()
+            for spinner in [self.checker_color2_r, self.checker_color2_g, self.checker_color2_b]:
+                spinner.setRange(0, 100)
+                spinner.setValue(10)
+            color2_layout.addWidget(QLabel("R:"))
+            color2_layout.addWidget(self.checker_color2_r)
+            color2_layout.addWidget(QLabel("G:"))
+            color2_layout.addWidget(self.checker_color2_g)
+            color2_layout.addWidget(QLabel("B:"))
+            color2_layout.addWidget(self.checker_color2_b)
+            self.texture_params_layout.addLayout(color2_layout)
+            
+        elif texture_type == "wood":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.wood_scale = QDoubleSpinBox()
+            self.wood_scale.setRange(1.0, 20.0)
+            self.wood_scale.setValue(5.0)
+            self.wood_scale.setSingleStep(0.5)
+            scale_layout.addWidget(self.wood_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "marble":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.marble_scale = QDoubleSpinBox()
+            self.marble_scale.setRange(1.0, 20.0)
+            self.marble_scale.setValue(3.0)
+            self.marble_scale.setSingleStep(0.5)
+            scale_layout.addWidget(self.marble_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "metal":
+            roughness_layout = QHBoxLayout()
+            roughness_layout.addWidget(QLabel("Roughness Variation:"))
+            self.metal_roughness = QDoubleSpinBox()
+            self.metal_roughness.setRange(0.0, 0.5)
+            self.metal_roughness.setValue(0.1)
+            self.metal_roughness.setSingleStep(0.05)
+            roughness_layout.addWidget(self.metal_roughness)
+            self.texture_params_layout.addLayout(roughness_layout)
+    
+    def load_texture_file(self):
+        """Load texture from file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Texture Image", 
+            "textures", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
+        )
+        
+        if filename:
+            self.texture_file_label.setText(f"Selected: {filename.split('/')[-1]}")
+            self.texture_file_path = filename
+    
+    def apply_texture(self):
+        """Apply selected texture to object"""
+        texture_type = self.texture_type.currentText().lower()
+        params = {}
+        
+        if texture_type == "noise":
+            params['scale'] = self.noise_scale.value()
+            
+        elif texture_type == "checker":
+            params['scale'] = self.checker_scale.value()
+            from cpp_raytracer.raytracer_cpp import Vector3
+            params['color1'] = Vector3(
+                self.checker_color1_r.value() / 100.0,
+                self.checker_color1_g.value() / 100.0,
+                self.checker_color1_b.value() / 100.0
+            )
+            params['color2'] = Vector3(
+                self.checker_color2_r.value() / 100.0,
+                self.checker_color2_g.value() / 100.0,
+                self.checker_color2_b.value() / 100.0
+            )
+            
+        elif texture_type == "wood":
+            params['scale'] = self.wood_scale.value()
+            
+        elif texture_type == "marble":
+            params['scale'] = self.marble_scale.value()
+            
+        elif texture_type == "metal":
+            params['roughness_variation'] = self.metal_roughness.value()
+            
+        elif texture_type == "image":
+            if hasattr(self, 'texture_file_path'):
+                params['filename'] = self.texture_file_path
+            else:
+                self.texture_file_label.setText("Please select a file first!")
+                return
+        
+        self.raytracer.apply_texture_to_object(texture_type, params)
+    
+    def apply_preset_texture(self, texture_name):
+        """Apply preset texture"""
+        params = {}
+        
+        if texture_name == "wood":
+            params['scale'] = 5.0
+        elif texture_name == "marble":
+            params['scale'] = 3.0
+        elif texture_name == "metal":
+            params['roughness_variation'] = 0.1
+        elif texture_name == "checker":
+            from cpp_raytracer.raytracer_cpp import Vector3
+            params['color1'] = Vector3(0.9, 0.9, 0.9)
+            params['color2'] = Vector3(0.1, 0.1, 0.1)
+            params['scale'] = 10.0
+        elif texture_name == "noise":
+            params['scale'] = 1.0
+        
+        self.raytracer.apply_texture_to_object(texture_name, params)
+    
+    def on_skybox_type_changed(self, skybox_type):
+        """Handle skybox type change"""
+        self.raytracer.set_skybox_type(skybox_type.lower())
+    
+    def on_skybox_color_changed(self):
+        """Handle skybox color changes"""
+        from cpp_raytracer.raytracer_cpp import Vector3
+        
+        color1 = Vector3(
+            self.skybox_color1_r.value() / 100.0,
+            self.skybox_color1_g.value() / 100.0,
+            self.skybox_color1_b.value() / 100.0
+        )
+        
+        color2 = Vector3(
+            self.skybox_color2_r.value() / 100.0,
+            self.skybox_color2_g.value() / 100.0,
+            self.skybox_color2_b.value() / 100.0
+        )
+        
+        self.raytracer.set_skybox_colors(color1, color2)
+    
+    def load_skybox_image(self):
+        """Load skybox from image file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Skybox Image", 
+            "textures", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
+        )
+        
+        if filename:
+            success = self.raytracer.load_skybox_image(filename)
+            if success:
+                self.skybox_file_label.setText(f"Loaded: {filename.split('/')[-1]}")
+            else:
+                self.skybox_file_label.setText("Failed to load image!")
+    
+    def apply_preset_skybox(self, skybox_name):
+        """Apply preset skybox"""
+        self.raytracer.set_skybox_type(skybox_name)
+        self.skybox_type.setCurrentText(skybox_name.title())
+    
+    def on_material_preset_changed(self, index):
+        """Handle material preset selection"""
+        preset_name = self.material_preset.currentText()
+        self.raytracer.apply_material_preset(preset_name)
+    
+    # ==================== EXISTING EVENT HANDLERS ====================
     
     def on_settings_changed(self):
         """Handle settings changes"""
@@ -751,6 +1177,7 @@ class ScrollableTabbedControlPanel(QWidget):
     
     def on_camera_pos_changed(self):
         """Update camera position"""
+        from cpp_raytracer.raytracer_cpp import Vector3
         pos = Vector3(self.cam_x.value(), self.cam_y.value(), self.cam_z.value())
         self.raytracer.camera.position = pos
         
@@ -764,6 +1191,7 @@ class ScrollableTabbedControlPanel(QWidget):
     
     def on_camera_target_changed(self):
         """Update camera target"""
+        from cpp_raytracer.raytracer_cpp import Vector3
         target = Vector3(self.target_x.value(), self.target_y.value(), self.target_z.value())
         self.raytracer.camera.target = target
         
@@ -1152,20 +1580,20 @@ class ScrollableTabbedControlPanel(QWidget):
         v = self.v_slider.value() / 100.0
         self.raytracer.set_object_color_hsv(h, s, v)
     
-    def on_texture_type_changed(self, txt):
-        """Handle texture type change"""
+    def on_texture_type_changed_scene(self, txt):
+        """Handle texture type change in scene tab"""
         # Currently just a placeholder
         pass
     
     def apply_texture_to_selected(self):
-        """Apply texture to selected object"""
+        """Apply texture to selected object in scene tab"""
         tex_type = self.texture_select.currentText()
         params = {
             'scale': float(self.tex_scale.value()),
             'octaves': int(self.tex_octaves.value()),
             'tint_hsv': (int(self.tint_h.value()), int(self.tint_s.value())/100.0, 1.0) if self.tint_s.value() > 0 else None
         }
-        success = self.raytracer.set_object_texture(tex_type, params)
+        success = self.raytracer.apply_texture_to_object(tex_type, params)
         if not success:
             print("Texture apply failed or unknown texture type")
     
@@ -1176,7 +1604,8 @@ class ScrollableTabbedControlPanel(QWidget):
             h = int(self.res_h.text())
             if w <= 0 or h <= 0:
                 raise ValueError("Invalid resolution")
-            self.raytracer.resize_viewport(w, h)
+            # Note: resize_viewport method would need to be implemented
+            print(f"Resolution change requested: {w}x{h}")
         except Exception as e:
             print(f"Invalid resolution: {e}")
 
@@ -1231,7 +1660,7 @@ class GUI(QMainWindow):
     
     def setup_ui(self):
         """Setup the main UI"""
-        self.setWindowTitle("C++ Ray Tracer - Interactive Controls")
+        self.setWindowTitle("C++ Ray Tracer - Interactive Controls with Skybox & Textures")
         self.setGeometry(100, 100, 1400, 900)
         
         # Central widget
@@ -1581,7 +2010,6 @@ class GUI(QMainWindow):
         self.raytracer.render_state.previous_mode = RenderMode.WIREFRAME
         
         # Force a frame update
-        self.raytracer._process_frame_for_display(0.016)
         self.manual_mode_change = False
     
     def on_silhouette_mode(self):
@@ -1599,7 +2027,6 @@ class GUI(QMainWindow):
         self.raytracer.render_state.previous_mode = RenderMode.SILHOUETTE
         
         # Force a frame update
-        self.raytracer._process_frame_for_display(0.016)
         self.manual_mode_change = False
     
     def on_frame_ready(self, frame_data):

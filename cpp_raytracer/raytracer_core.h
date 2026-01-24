@@ -3,8 +3,25 @@
 #include <cmath>
 #include <random>
 #include <string>
+#include <memory>
 #include <xmmintrin.h>  // SSE
 #include <pmmintrin.h>  // SSE3
+#include "textures.h"
+
+// Add material types
+enum MaterialType {
+    MATERIAL_CUSTOM = 0,
+    MATERIAL_DIFFUSE = 1,
+    MATERIAL_METAL = 2,
+    MATERIAL_DIELECTRIC = 3,
+    MATERIAL_PLASTIC = 4,
+    MATERIAL_WOOD = 5,
+    MATERIAL_MARBLE = 6,
+    MATERIAL_RUSTY_METAL = 7,
+    MATERIAL_GLASS = 8,
+    MATERIAL_MIRROR = 9,
+    MATERIAL_RUBBER = 10
+};
 
 // Optimized Vector3 with same interface
 struct Vector3 {
@@ -97,7 +114,6 @@ inline Vector3 lerp(const Vector3& a, const Vector3& b, double t) {
     return a * (1.0 - t) + b * t;
 }
 
-
 struct Ray {
     Vector3 origin;
     Vector3 direction;
@@ -114,19 +130,27 @@ struct Material {
     Vector3 emission;
     double ior;
     
+    // Texture support
+    std::shared_ptr<Texture> albedo_texture;
+    std::shared_ptr<Texture> roughness_texture;
+    
+    // Material type for presets
+    MaterialType material_type;
+    
     Material() : albedo(0.8, 0.8, 0.8), metallic(0.0), roughness(0.5), 
-                emission(0,0,0), ior(1.5) {}
+                emission(0,0,0), ior(1.5), material_type(MATERIAL_CUSTOM) {}
 };
 
 struct HitRecord {
     double t;
     Vector3 point;
     Vector3 normal;
+    Vector3 sphere_center;  // ADDED for texture mapping
     Material material;
     bool front_face;
     int object_id;
     
-    HitRecord() : t(0), point(0,0,0), normal(0,0,0), material(), 
+    HitRecord() : t(0), point(0,0,0), normal(0,0,0), sphere_center(0,0,0), material(), 
                  front_face(true), object_id(0) {}
     
     void set_face_normal(const Ray& ray, const Vector3& outward_normal) {
@@ -157,14 +181,10 @@ public:
     
     Camera() : position(0, 1, 5), target(0, 1, 4), up(0, 1, 0), fov(45.0), aspect_ratio(16/9) {}
     
-    Ray Camera::get_ray(double u, double v) const {
+    Ray get_ray(double u, double v) const {
         // Convert from [0,1] to [-1,1] and account for aspect ratio
         double ndc_x = (u - 0.5) * 2.0;
         double ndc_y = (0.5 - v) * 2.0;  // Flip Y
-        
-        // FIXED: Use proper perspective projection matching OpenGL
-        // The original formula was incorrect - it was treating ndc_x/ndc_y
-        // as already scaled by tan(fov/2), but they should be scaled here
         
         // Compute camera basis vectors based on target
         Vector3 forward = (target - position).normalize();
@@ -174,13 +194,12 @@ public:
         }
         Vector3 up = right.cross(forward).normalize();
         
-        // FIX: Calculate the viewport dimensions based on FOV
-        // For perspective projection, we need to scale by tan(fov/2)
+        // Calculate the viewport dimensions based on FOV
         double fov_rad = fov * 0.00872664925997222; // 3.14159265359 / 360.0;  // Convert to radians
         double viewport_height = std::tan(fov_rad);
         double viewport_width = viewport_height * aspect_ratio;
         
-        // FIX: Apply the viewport scaling to ndc coordinates
+        // Apply the viewport scaling to ndc coordinates
         Vector3 direction = forward + 
                         (right * (ndc_x * viewport_width)) + 
                         (up * (ndc_y * viewport_height));
@@ -208,8 +227,8 @@ public:
     }
 };
 
-
 class BVH;
+class Skybox;
 
 struct DebugInfo {
     bool enable_debug = false;
@@ -230,10 +249,10 @@ struct DebugInfo {
 class Scene {
 public:
     std::vector<Sphere> spheres;
-    Vector3 background_color;
-    BVH* bvh;
+    std::unique_ptr<Skybox> skybox;  // NEW
     bool use_bvh;
     bool debug_mode;
+    BVH* bvh;
     
     Scene();  // Default constructor
     Scene(const Scene& other);  // Copy constructor
@@ -245,6 +264,10 @@ public:
     void build_bvh();
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
+    
+    // Skybox methods
+    Skybox* get_skybox() { return skybox.get(); }
+    void set_skybox(std::unique_ptr<Skybox> new_skybox) { skybox = std::move(new_skybox); }
 };
 
 class RayTracer {
@@ -261,6 +284,10 @@ private:
     bool refract(const Vector3& v, const Vector3& n, double ni_over_nt, Vector3& refracted);
     double schlick(double cosine, double ref_idx);
     
+    // Texture sampling
+    Vector3 sample_albedo(const HitRecord& rec) const;
+    float sample_roughness(const HitRecord& rec) const;
+    
 public:
     RayTracer();
     ~RayTracer();
@@ -268,7 +295,6 @@ public:
     Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
     std::vector<double> render(int width, int height, int samples_per_pixel, int max_depth);
     
-    // New methods for interaction
     Camera& get_camera() { return camera; }
     Camera get_camera_copy() const { return camera; }
     void set_camera(const Camera& cam) { camera = cam; }
@@ -277,4 +303,7 @@ public:
 
     void set_debug_mode(bool enable) { debug_info.enable_debug = enable; }
     DebugInfo get_debug_info() const { return debug_info; }
+    
+    // Scene access
+    Scene& get_scene() { return scene; }
 };

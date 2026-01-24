@@ -1,940 +1,1388 @@
-# interaction.py - COMPLETE WORKING VERSION
-
+import sys
 import numpy as np
-import time
-import threading
-from queue import Queue
-from typing import Dict, Optional, Tuple, List
-import math
-from enum import Enum
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
+                             QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox,
+                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QGridLayout)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent, QIntValidator
 import cv2
 
-from denoiser import Denoiser
-from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
-from utils import FrameRateLimiter
+from interaction import RayTracerInteraction, RenderMode
 
-class RenderMode(Enum):
-    """Rendering modes for different interaction scenarios"""
-    RAYTRACING = 0
-    SILHOUETTE = 1
-    WIREFRAME = 2
+class RenderThread(QThread):
+    """Thread for handling rendering updates"""
+    frame_ready = pyqtSignal(dict)
+    rendering_finished = pyqtSignal()
+    
+    def __init__(self, raytracer):
+        super().__init__()
+        self.raytracer = raytracer
+        self.running = True
+    
+    def run(self):
+        """Main rendering loop"""
+        self.raytracer.start_rendering()
+        
+        while self.running:
+            while self.raytracer.has_frames():
+                frame = self.raytracer.get_frame()
+                if frame is None:
+                    break
+                
+                if 'done' in frame:
+                    self.rendering_finished.emit()
+                    break
+                
+                self.frame_ready.emit(frame)
+            
+            self.msleep(16)  # ~60 FPS
+    
+    def stop(self):
+        """Stop the rendering thread"""
+        self.running = False
+        self.raytracer.stop_rendering()
+        self.wait()
 
-class Matrix3:
-    """Simple 3x3 matrix for camera rotations"""
+class ImageDisplay(QLabel):
+    """Custom image display widget with mouse interaction"""
+    mouse_moved = pyqtSignal(float, float)
+    mouse_pressed = pyqtSignal(float, float, int)
+    mouse_released = pyqtSignal(int)
+    right_click = pyqtSignal(float, float)
     
-    @staticmethod
-    def rotation_y(angle: float) -> 'Matrix3':
-        c, s = math.cos(angle), math.sin(angle)
-        return Matrix3([
-            [c, 0, s],
-            [0, 1, 0],
-            [-s, 0, c]
-        ])
-    
-    @staticmethod
-    def rotation_axis(axis: Vector3, angle: float) -> 'Matrix3':
-        c, s = math.cos(angle), math.sin(angle)
-        x, y, z = axis.x, axis.y, axis.z
-        
-        return Matrix3([
-            [c + (1-c)*x*x, (1-c)*x*y - s*z, (1-c)*x*z + s*y],
-            [(1-c)*x*y + s*z, c + (1-c)*y*y, (1-c)*y*z - s*x],
-            [(1-c)*x*z - s*y, (1-c)*y*z + s*x, c + (1-c)*z*z]
-        ])
-    
-    def __init__(self, data):
-        self.data = data
-    
-    def __mul__(self, vec: Vector3) -> Vector3:
-        m = self.data
-        return Vector3(
-            m[0][0]*vec.x + m[0][1]*vec.y + m[0][2]*vec.z,
-            m[1][0]*vec.x + m[1][1]*vec.y + m[1][2]*vec.z,
-            m[2][0]*vec.x + m[2][1]*vec.y + m[2][2]*vec.z
-        )
-
-class CameraController:
-    """Handles camera movement and rotation logic"""
-    
-    def __init__(self, camera: Camera, settings: Dict):
-        self.camera = camera
-        self.settings = settings
-        
-        # Camera control state
-        self.keys_pressed = {
-            'forward': False,  # W
-            'backward': False,  # S
-            'left': False,  # A
-            'right': False,  # D
-            'up': False,  # Space/Shift
-            'down': False,  # Ctrl
-        }
-        self.rotating = False
-        self.last_mouse_pos = None
-        
-        # Camera orientation frame
-        self.update_camera_frame()
-    
-    def update_camera_frame(self):
-        """Update camera orientation vectors"""
-        # Forward vector (camera to target)
-        self.forward = (self.camera.target - self.camera.position).normalize()
-        
-        # Right vector (perpendicular to forward and world up)
-        world_up = Vector3(0, 1, 0)
-        self.right = self.forward.cross(world_up).normalize()
-        if self.right.length() == 0:
-            self.right = Vector3(1, 0, 0)
-        
-        # Up vector (perpendicular to forward and right)
-        self.up = self.right.cross(self.forward).normalize()
-    
-    def get_movement_vector(self) -> Vector3:
-        """Calculate movement vector based on pressed keys"""
-        move_vector = Vector3(0, 0, 0)
-        speed = self.settings['camera_move_speed']
-        
-        if self.keys_pressed['forward']:
-            move_vector = move_vector + self.forward * speed
-        if self.keys_pressed['backward']:
-            move_vector = move_vector - self.forward * speed
-        if self.keys_pressed['left']:
-            move_vector = move_vector - self.right * speed
-        if self.keys_pressed['right']:
-            move_vector = move_vector + self.right * speed
-        if self.keys_pressed['up']:
-            move_vector = move_vector + Vector3(0, speed, 0)
-        if self.keys_pressed['down']:
-            move_vector = move_vector - Vector3(0, speed, 0)
-        
-        return move_vector
-    
-    def apply_bounds(self):
-        """Apply bounds to camera position"""
-        self.camera.position.x = max(-20, min(20, self.camera.position.x))
-        self.camera.position.y = max(0.1, min(20, self.camera.position.y))
-        self.camera.position.z = max(-20, min(20, self.camera.position.z))
-    
-    def rotate(self, dx: float, dy: float):
-        """Rotate camera based on mouse movement"""
-        sensitivity = self.settings['camera_rotate_speed']
-        yaw = -dx * sensitivity
-        pitch = -dy * sensitivity
-        
-        # Limit pitch to prevent flipping
-        pitch = max(-1.5, min(1.5, pitch))
-        
-        # Current orientation
-        forward = (self.camera.target - self.camera.position).normalize()
-        right = forward.cross(Vector3(0, 1, 0)).normalize()
-        
-        # Yaw rotation (around world up)
-        yaw_rot = Matrix3.rotation_y(yaw)
-        forward = yaw_rot * forward
-        
-        # Pitch rotation (around camera right)
-        if abs(pitch) > 0.001:
-            pitch_rot = Matrix3.rotation_axis(right, pitch)
-            forward = pitch_rot * forward
-        
-        # Update camera target
-        self.camera.target = self.camera.position + forward
-        self.update_camera_frame()
-
-class ObjectDragger:
-    """Handles object dragging logic"""
-    
-    def __init__(self, scene: Scene, camera_controller: CameraController, settings: Dict):
-        self.scene = scene
-        self.camera_controller = camera_controller
-        self.settings = settings
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet("border: 1px solid #444; background-color: #1a1a1a;")
+        self.setMinimumSize(400, 300)
         
         self.dragging = False
-        self.selected_object_id = -1
-        self.drag_start_pos = None
-        self.drag_start_object_pos = None
-        self.lock_x = self.lock_y = self.lock_z = False
+        self.drag_button = None
+        self.last_pos = None
     
-    def start_drag(self, x: float, y: float) -> bool:
-        """Start dragging an object at screen coordinates (x, y)"""
-        # This will be called from RayTracerInteraction.start_object_dragging
-        return False
-    
-    def update_drag(self, dx: float, dy: float):
-        """Update object position during dragging"""
-        if not self.dragging:
+    def set_image(self, image_array):
+        """Set image from numpy array"""
+        if image_array is None or image_array.size == 0:
             return
         
-        obj = self._get_selected_object()
-        if not obj:
-            return
+        height, width, channel = image_array.shape
+        bytes_per_line = 3 * width
         
-        speed = self.settings['move_speed'] * 2.0
+        image_8bit = (np.clip(image_array, 0, 1) * 255).astype(np.uint8)
         
-        # Convert screen movement to world movement
-        world_dx = self.camera_controller.right * dx * 2.0
-        world_dy = self.camera_controller.up * (-dy) * 2.0
+        # Remove or modify this line:
+        # image_rgb = cv2.cvtColor(image_8bit, cv2.COLOR_BGR2RGB)
         
-        # Apply dimension locks
-        if self.lock_x:
-            world_dx.x = 0
-            world_dy.x = 0
-        if self.lock_y:
-            world_dx.y = 0
-            world_dy.y = 0
-        if self.lock_z:
-            world_dx.z = 0
-            world_dy.z = 0
-        
-        # Calculate new position
-        move_vector = (world_dx + world_dy) * speed
-        new_pos = self.drag_start_object_pos + move_vector
-        
-        # Apply bounds
-        new_pos.x = max(-8, min(8, new_pos.x))
-        new_pos.y = max(0.1, min(8, new_pos.y))
-        new_pos.z = max(-8, min(2, new_pos.z))
-        
-        # Update object
-        obj.center = new_pos
+        # Use image_8bit directly if it's already RGB:
+        q_image = QImage(image_8bit.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        self.setPixmap(QPixmap.fromImage(q_image))
     
-    def stop_drag(self):
-        """Stop dragging object"""
-        self.dragging = False
-        self.lock_x = self.lock_y = self.lock_z = False
+    def mousePressEvent(self, event):
+        button = event.button()
+        if button in [Qt.LeftButton, Qt.RightButton]:
+            self.dragging = True
+            self.drag_button = button
+            self.last_pos = event.pos()
+            
+            if self.pixmap():
+                pixmap_size = self.pixmap().size()
+                label_size = self.size()
+                
+                x_offset = (label_size.width() - pixmap_size.width()) / 2
+                y_offset = (label_size.height() - pixmap_size.height()) / 2
+                
+                norm_x = (event.x() - x_offset) / pixmap_size.width()
+                norm_y = (event.y() - y_offset) / pixmap_size.height()
+                
+                if 0 <= norm_x <= 1 and 0 <= norm_y <= 1:
+                    if button == Qt.RightButton:
+                        self.right_click.emit(norm_x, norm_y)
+                    self.mouse_pressed.emit(norm_x, norm_y, button)
     
-    def set_dimension_lock(self, dimension: str, state: bool):
-        """Lock/unlock a dimension for dragging"""
-        if dimension == 'x':
-            self.lock_x = state
-        elif dimension == 'y':
-            self.lock_y = state
-        elif dimension == 'z':
-            self.lock_z = state
+    def mouseReleaseEvent(self, event):
+        button = event.button()
+        if button == self.drag_button:
+            self.dragging = False
+            self.drag_button = None
+            self.last_pos = None
+            self.mouse_released.emit(button)
     
-    def _get_selected_object(self) -> Optional[Sphere]:
-        """Get currently selected object"""
-        for sphere in self.scene.spheres:
-            if sphere.object_id == self.selected_object_id:
-                return sphere
-        return None
+    def mouseMoveEvent(self, event):
+        if self.dragging and self.last_pos and self.pixmap():
+            current_pos = event.pos()
+            dx = current_pos.x() - self.last_pos.x()
+            dy = current_pos.y() - self.last_pos.y()
+            
+            pixmap_size = self.pixmap().size()
+            norm_dx = dx / pixmap_size.width()
+            norm_dy = dy / pixmap_size.height()
+            
+            self.mouse_moved.emit(norm_dx, norm_dy)
+            self.last_pos = current_pos
 
-class RenderStateManager:
-    """Manages rendering state and mode transitions"""
+class ScrollableTabbedControlPanel(QWidget):
+    """Scrollable tabbed control panel with original functionality"""
+    def __init__(self, raytracer):
+        super().__init__()
+        self.raytracer = raytracer
+        self.material_update_timer = QTimer()
+        self.material_update_timer.setSingleShot(True)
+        self.material_update_timer.timeout.connect(self.apply_material_changes)
+        self.pending_material_changes = {}
+        
+        self.setup_ui()
+        self.update_object_info()
+        self.update_camera_info()
     
-    def __init__(self, width: int, height: int):
-        self.width = width
-        self.height = height
+    def setup_ui(self):
+        """Setup the control panel UI with tabs"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)
         
-        self.previous_mode = RenderMode.RAYTRACING
-        self.current_mode = RenderMode.RAYTRACING
-        self.is_rendering = False
+        # Create tab widget
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         
-        # Buffers for fast rendering modes
-        self.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
-        self.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+        # Create tabs - ADD NEW TABS
+        self.render_tab = self.create_render_tab()
+        self.scene_tab = self.create_scene_tab()
+        self.camera_tab = self.create_camera_tab()
+        self.object_tab = self.create_object_tab()
+        self.material_tab = self.create_material_tab()
+        self.texture_tab = self.create_texture_tab()      # NEW
+        self.skybox_tab = self.create_skybox_tab()        # NEW
+        self.denoiser_tab = self.create_denoiser_tab()
         
-        # Interaction state
-        self.interaction_in_progress = False
-        self.last_interaction_time = 0
-        self.interaction_timeout = 0.5  # 500ms timeout
+        # Add tabs
+        self.tabs.addTab(self.render_tab, "Render")
+        self.tabs.addTab(self.scene_tab, "Scene")
+        self.tabs.addTab(self.camera_tab, "Camera")
+        self.tabs.addTab(self.object_tab, "Object")
+        self.tabs.addTab(self.material_tab, "Material")
+        self.tabs.addTab(self.texture_tab, "Texture")     # NEW
+        self.tabs.addTab(self.skybox_tab, "Skybox")       # NEW
+        self.tabs.addTab(self.denoiser_tab, "Denoiser")
+        
+        layout.addWidget(self.tabs)
+        self.setLayout(layout)
     
-    def set_mode(self, mode: RenderMode):
-        """Set rendering mode with proper state management"""
-        if mode != self.current_mode:
-            self.previous_mode = self.current_mode
-            self.current_mode = mode
+    def create_render_tab(self):
+        """Create rendering controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
         
-        # Stop ray tracing when switching to fast modes
-        if mode != RenderMode.RAYTRACING:
-            self.is_rendering = False
-    
-    def start_interaction(self):
-        """Start user interaction"""
-        self.interaction_in_progress = True
-        self.last_interaction_time = time.time()
+        # Rendering settings group
+        render_group = QGroupBox("Rendering Settings")
+        render_layout = QVBoxLayout()
         
-        # Store previous mode if it was ray tracing
-        if self.current_mode == RenderMode.RAYTRACING:
-            self.previous_mode = RenderMode.RAYTRACING
+        # Max Samples
+        samples_layout = QHBoxLayout()
+        samples_layout.addWidget(QLabel("Max Samples:"))
+        self.max_samples = QSpinBox()
+        self.max_samples.setRange(1, 1024)
+        self.max_samples.setValue(self.raytracer.settings["max_samples"])
+        self.max_samples.valueChanged.connect(self.on_settings_changed)
+        samples_layout.addWidget(self.max_samples)
+        render_layout.addLayout(samples_layout)
         
-        # Switch to wireframe for responsiveness
-        self.set_mode(RenderMode.WIREFRAME)
+        # Samples per Batch
+        batch_layout = QHBoxLayout()
+        batch_layout.addWidget(QLabel("Samples/Batch:"))
+        self.samples_batch = QSpinBox()
+        self.samples_batch.setRange(1, 64)
+        self.samples_batch.setValue(self.raytracer.settings["samples_per_batch"])
+        self.samples_batch.valueChanged.connect(self.on_settings_changed)
+        batch_layout.addWidget(self.samples_batch)
+        render_layout.addLayout(batch_layout)
+        
+        # Max Depth
+        depth_layout = QHBoxLayout()
+        depth_layout.addWidget(QLabel("Max Depth:"))
+        self.max_depth = QSpinBox()
+        self.max_depth.setRange(1, 32)
+        self.max_depth.setValue(self.raytracer.settings["max_depth"])
+        self.max_depth.valueChanged.connect(self.on_settings_changed)
+        depth_layout.addWidget(self.max_depth)
+        render_layout.addLayout(depth_layout)
+        
+        # Exposure
+        exposure_layout = QHBoxLayout()
+        exposure_layout.addWidget(QLabel("Exposure:"))
+        self.exposure = QDoubleSpinBox()
+        self.exposure.setRange(0.1, 5.0)
+        self.exposure.setSingleStep(0.1)
+        self.exposure.setValue(self.raytracer.settings["exposure"])
+        self.exposure.valueChanged.connect(self.on_settings_changed)
+        exposure_layout.addWidget(self.exposure)
+        render_layout.addLayout(exposure_layout)
+        
+        # Enhance image
+        self.enhance_checkbox = QCheckBox("Enhance Contrast")
+        self.enhance_checkbox.setChecked(self.raytracer.settings["enhance_image"])
+        self.enhance_checkbox.toggled.connect(self.on_enhance_changed)
+        render_layout.addWidget(self.enhance_checkbox)
+        
+        render_group.setLayout(render_layout)
+        layout.addWidget(render_group)
+        
+        # Viewport resolution group
+        res_group = QGroupBox("Viewport Resolution")
+        res_layout = QHBoxLayout()
+        self.res_w = QLineEdit(str(self.raytracer.width))
+        self.res_h = QLineEdit(str(self.raytracer.height))
+        self.res_w.setValidator(QIntValidator(1, 4096))
+        self.res_h.setValidator(QIntValidator(1, 4096))
+        res_layout.addWidget(QLabel("W:"))
+        res_layout.addWidget(self.res_w)
+        res_layout.addWidget(QLabel("H:"))
+        res_layout.addWidget(self.res_h)
+        apply_res_btn = QPushButton("Apply")
+        apply_res_btn.clicked.connect(self.on_apply_resolution)
+        res_layout.addWidget(apply_res_btn)
+        res_group.setLayout(res_layout)
+        layout.addWidget(res_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
     
-    def update_interaction(self):
-        """Update last interaction time"""
-        self.last_interaction_time = time.time()
+    def create_scene_tab(self):
+        """Create scene management tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Scene management group
+        scene_group = QGroupBox("Scene Management")
+        scene_layout = QVBoxLayout()
+        
+        # Object count label
+        self.object_count_label = QLabel(f"Objects: {self.raytracer.get_object_count()}")
+        scene_layout.addWidget(self.object_count_label)
+        
+        # Add object button
+        add_object_btn = QPushButton("Add Sphere")
+        add_object_btn.clicked.connect(self.add_object)
+        scene_layout.addWidget(add_object_btn)
+        
+        # Remove object button
+        remove_object_btn = QPushButton("Remove Selected")
+        remove_object_btn.clicked.connect(self.remove_object)
+        scene_layout.addWidget(remove_object_btn)
+        
+        scene_group.setLayout(scene_layout)
+        layout.addWidget(scene_group)
+        
+        # Texture controls group
+        texture_group = QGroupBox("Texture / Material")
+        texture_layout = QVBoxLayout()
+        
+        # Texture type selection
+        tex_row = QHBoxLayout()
+        tex_row.addWidget(QLabel("Type:"))
+        self.texture_select = QComboBox()
+        self.texture_select.addItems(["none", "noise"])
+        self.texture_select.currentTextChanged.connect(self.on_texture_type_changed)
+        tex_row.addWidget(self.texture_select)
+        texture_layout.addLayout(tex_row)
+        
+        # Texture parameters
+        param_row = QHBoxLayout()
+        param_row.addWidget(QLabel("Scale:"))
+        self.tex_scale = QDoubleSpinBox()
+        self.tex_scale.setRange(0.01, 10.0)
+        self.tex_scale.setSingleStep(0.1)
+        self.tex_scale.setValue(1.0)
+        param_row.addWidget(self.tex_scale)
+        param_row.addWidget(QLabel("Octaves:"))
+        self.tex_octaves = QSpinBox()
+        self.tex_octaves.setRange(1, 8)
+        self.tex_octaves.setValue(3)
+        param_row.addWidget(self.tex_octaves)
+        texture_layout.addLayout(param_row)
+        
+        # Tint controls
+        tint_row = QHBoxLayout()
+        tint_row.addWidget(QLabel("Tint H:"))
+        self.tint_h = QSpinBox()
+        self.tint_h.setRange(0, 360)
+        self.tint_h.setValue(0)
+        tint_row.addWidget(self.tint_h)
+        tint_row.addWidget(QLabel("S:"))
+        self.tint_s = QSpinBox()
+        self.tint_s.setRange(0, 100)
+        self.tint_s.setValue(0)
+        tint_row.addWidget(self.tint_s)
+        texture_layout.addLayout(tint_row)
+        
+        # Apply texture button
+        apply_tex_btn = QPushButton("Apply Texture to Selected")
+        apply_tex_btn.clicked.connect(self.apply_texture_to_selected)
+        texture_layout.addWidget(apply_tex_btn)
+        
+        texture_group.setLayout(texture_layout)
+        layout.addWidget(texture_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
     
-    def should_return_to_raytracing(self) -> bool:
-        """Check if should return to ray tracing mode"""
-        current_time = time.time()
-        return (
-            self.interaction_in_progress and
-            current_time - self.last_interaction_time > self.interaction_timeout and
-            self.previous_mode == RenderMode.RAYTRACING and
-            not self.interaction_in_progress  # Double check
+    def create_camera_tab(self):
+        """Create camera controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Camera position group
+        pos_group = QGroupBox("Position")
+        pos_layout = QVBoxLayout()
+        
+        # X
+        x_layout = QHBoxLayout()
+        x_layout.addWidget(QLabel("X:"))
+        self.cam_x = QDoubleSpinBox()
+        self.cam_x.setRange(-20, 20)
+        self.cam_x.setSingleStep(0.1)
+        self.cam_x.setValue(0.0)
+        self.cam_x.valueChanged.connect(self.on_camera_pos_changed)
+        x_layout.addWidget(self.cam_x)
+        pos_layout.addLayout(x_layout)
+        
+        # Y
+        y_layout = QHBoxLayout()
+        y_layout.addWidget(QLabel("Y:"))
+        self.cam_y = QDoubleSpinBox()
+        self.cam_y.setRange(-20, 20)
+        self.cam_y.setSingleStep(0.1)
+        self.cam_y.setValue(2.0)
+        self.cam_y.valueChanged.connect(self.on_camera_pos_changed)
+        y_layout.addWidget(self.cam_y)
+        pos_layout.addLayout(y_layout)
+        
+        # Z
+        z_layout = QHBoxLayout()
+        z_layout.addWidget(QLabel("Z:"))
+        self.cam_z = QDoubleSpinBox()
+        self.cam_z.setRange(-20, 20)
+        self.cam_z.setSingleStep(0.1)
+        self.cam_z.setValue(5.0)
+        self.cam_z.valueChanged.connect(self.on_camera_pos_changed)
+        z_layout.addWidget(self.cam_z)
+        pos_layout.addLayout(z_layout)
+        
+        pos_group.setLayout(pos_layout)
+        layout.addWidget(pos_group)
+        
+        # Camera target group
+        target_group = QGroupBox("Target")
+        target_layout = QVBoxLayout()
+        
+        # Target X
+        tx_layout = QHBoxLayout()
+        tx_layout.addWidget(QLabel("X:"))
+        self.target_x = QDoubleSpinBox()
+        self.target_x.setRange(-20, 20)
+        self.target_x.setSingleStep(0.1)
+        self.target_x.setValue(0.0)
+        self.target_x.valueChanged.connect(self.on_camera_target_changed)
+        tx_layout.addWidget(self.target_x)
+        target_layout.addLayout(tx_layout)
+        
+        # Target Y
+        ty_layout = QHBoxLayout()
+        ty_layout.addWidget(QLabel("Y:"))
+        self.target_y = QDoubleSpinBox()
+        self.target_y.setRange(-20, 20)
+        self.target_y.setSingleStep(0.1)
+        self.target_y.setValue(0.0)
+        self.target_y.valueChanged.connect(self.on_camera_target_changed)
+        ty_layout.addWidget(self.target_y)
+        target_layout.addLayout(ty_layout)
+        
+        # Target Z
+        tz_layout = QHBoxLayout()
+        tz_layout.addWidget(QLabel("Z:"))
+        self.target_z = QDoubleSpinBox()
+        self.target_z.setRange(-20, 20)
+        self.target_z.setSingleStep(0.1)
+        self.target_z.setValue(-1.0)
+        self.target_z.valueChanged.connect(self.on_camera_target_changed)
+        tz_layout.addWidget(self.target_z)
+        target_layout.addLayout(tz_layout)
+        
+        target_group.setLayout(target_layout)
+        layout.addWidget(target_group)
+        
+        # Camera settings group
+        settings_group = QGroupBox("Settings")
+        settings_layout = QVBoxLayout()
+        
+        # FOV
+        fov_layout = QHBoxLayout()
+        fov_layout.addWidget(QLabel("FOV:"))
+        self.fov = QDoubleSpinBox()
+        self.fov.setRange(10, 120)
+        self.fov.setSingleStep(1.0)
+        self.fov.setValue(45.0)
+        self.fov.valueChanged.connect(self.on_camera_fov_changed)
+        fov_layout.addWidget(self.fov)
+        settings_layout.addLayout(fov_layout)
+        
+        # Speed controls
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(QLabel("Move Speed:"))
+        self.move_speed = QDoubleSpinBox()
+        self.move_speed.setRange(0.01, 1.0)
+        self.move_speed.setSingleStep(0.01)
+        self.move_speed.setValue(self.raytracer.settings["camera_move_speed"])
+        self.move_speed.valueChanged.connect(self.on_move_speed_changed)
+        speed_layout.addWidget(self.move_speed)
+        settings_layout.addLayout(speed_layout)
+        
+        # Rotate speed
+        rotate_layout = QHBoxLayout()
+        rotate_layout.addWidget(QLabel("Rotate Speed:"))
+        self.rotate_speed = QDoubleSpinBox()
+        self.rotate_speed.setRange(0.01, 2.0)
+        self.rotate_speed.setSingleStep(0.05)
+        self.rotate_speed.setValue(self.raytracer.settings["camera_rotate_speed"])
+        self.rotate_speed.valueChanged.connect(self.on_rotate_speed_changed)
+        rotate_layout.addWidget(self.rotate_speed)
+        settings_layout.addLayout(rotate_layout)
+        
+        # Reset button
+        reset_btn = QPushButton("Reset Camera")
+        reset_btn.clicked.connect(self.reset_camera)
+        settings_layout.addWidget(reset_btn)
+        
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_object_tab(self):
+        """Create object controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Object selection group
+        selection_group = QGroupBox("Object Selection")
+        selection_layout = QVBoxLayout()
+        
+        # Object selection
+        obj_layout = QHBoxLayout()
+        obj_layout.addWidget(QLabel("Object:"))
+        self.object_select = QComboBox()
+        self.update_object_list()
+        self.object_select.currentIndexChanged.connect(self.on_object_selected)
+        obj_layout.addWidget(self.object_select)
+        selection_layout.addLayout(obj_layout)
+        
+        # Object info
+        self.object_info = QLabel("Selected: None")
+        self.object_info.setStyleSheet("color: #aaa; font-style: italic;")
+        selection_layout.addWidget(self.object_info)
+        
+        selection_group.setLayout(selection_layout)
+        layout.addWidget(selection_group)
+        
+        # Movement buttons group
+        move_group = QGroupBox("Keyboard Movement")
+        move_layout = QVBoxLayout()
+        
+        # Horizontal movement
+        horiz_layout = QHBoxLayout()
+        self.btn_left = QPushButton("← Left (J)")
+        self.btn_right = QPushButton("Right (L) →")
+        horiz_layout.addWidget(self.btn_left)
+        horiz_layout.addWidget(self.btn_right)
+        move_layout.addLayout(horiz_layout)
+        
+        # Vertical movement
+        vert_layout = QHBoxLayout()
+        self.btn_up = QPushButton("↑ Up (I)")
+        self.btn_down = QPushButton("Down (K) ↓")
+        vert_layout.addWidget(self.btn_up)
+        vert_layout.addWidget(self.btn_down)
+        move_layout.addLayout(vert_layout)
+        
+        # Depth movement
+        depth_layout = QHBoxLayout()
+        self.btn_forward = QPushButton("↗ Forward (U)")
+        self.btn_backward = QPushButton("Backward (O) ↙")
+        depth_layout.addWidget(self.btn_forward)
+        depth_layout.addWidget(self.btn_backward)
+        move_layout.addLayout(depth_layout)
+        
+        # Object move speed
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(QLabel("Object Speed:"))
+        self.object_speed = QDoubleSpinBox()
+        self.object_speed.setRange(0.01, 2.0)
+        self.object_speed.setSingleStep(0.05)
+        self.object_speed.setValue(self.raytracer.settings["move_speed"])
+        self.object_speed.valueChanged.connect(self.on_object_speed_changed)
+        speed_layout.addWidget(self.object_speed)
+        move_layout.addLayout(speed_layout)
+        
+        move_group.setLayout(move_layout)
+        layout.addWidget(move_group)
+        
+        # Connect buttons
+        self.btn_left.clicked.connect(lambda: self._move_object(-1, 0, 0))
+        self.btn_right.clicked.connect(lambda: self._move_object(1, 0, 0))
+        self.btn_up.clicked.connect(lambda: self._move_object(0, 1, 0))
+        self.btn_down.clicked.connect(lambda: self._move_object(0, -1, 0))
+        self.btn_forward.clicked.connect(lambda: self._move_object(0, 0, -1))
+        self.btn_backward.clicked.connect(lambda: self._move_object(0, 0, 1))
+        
+        # Dimension locks
+        lock_group = QGroupBox("Dimension Locks (for dragging)")
+        lock_layout = QHBoxLayout()
+        self.lock_x = QCheckBox("X")
+        self.lock_y = QCheckBox("Y")
+        self.lock_z = QCheckBox("Z")
+        self.lock_x.toggled.connect(lambda s: self.raytracer.set_dimension_lock('x', s))
+        self.lock_y.toggled.connect(lambda s: self.raytracer.set_dimension_lock('y', s))
+        self.lock_z.toggled.connect(lambda s: self.raytracer.set_dimension_lock('z', s))
+        lock_layout.addWidget(self.lock_x)
+        lock_layout.addWidget(self.lock_y)
+        lock_layout.addWidget(self.lock_z)
+        lock_group.setLayout(lock_layout)
+        layout.addWidget(lock_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_material_tab(self):
+        """Create material controls tab - UPDATED WITH PRESETS"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Material preset selection
+        preset_group = QGroupBox("Material Preset")
+        preset_layout = QVBoxLayout()
+        
+        self.material_preset = QComboBox()
+        for preset in self.raytracer.get_available_material_presets():
+            self.material_preset.addItem(preset)
+        self.material_preset.currentIndexChanged.connect(self.on_material_preset_changed)
+        preset_layout.addWidget(self.material_preset)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
+        
+        # Color controls group
+        color_group = QGroupBox("Color")
+        color_layout = QVBoxLayout()
+        
+        # Albedo (color) controls
+        # Red
+        r_layout = QHBoxLayout()
+        r_layout.addWidget(QLabel("R:"))
+        self.color_r = QSlider(Qt.Horizontal)
+        self.color_r.setRange(0, 100)
+        self.color_r.setValue(90)
+        self.color_r.sliderReleased.connect(self.on_material_slider_released)
+        self.color_r.valueChanged.connect(self.on_material_value_changed)
+        r_layout.addWidget(self.color_r)
+        color_layout.addLayout(r_layout)
+        
+        # Green
+        g_layout = QHBoxLayout()
+        g_layout.addWidget(QLabel("G:"))
+        self.color_g = QSlider(Qt.Horizontal)
+        self.color_g.setRange(0, 100)
+        self.color_g.setValue(90)
+        self.color_g.sliderReleased.connect(self.on_material_slider_released)
+        self.color_g.valueChanged.connect(self.on_material_value_changed)
+        g_layout.addWidget(self.color_g)
+        color_layout.addLayout(g_layout)
+        
+        # Blue
+        b_layout = QHBoxLayout()
+        b_layout.addWidget(QLabel("B:"))
+        self.color_b = QSlider(Qt.Horizontal)
+        self.color_b.setRange(0, 100)
+        self.color_b.setValue(90)
+        self.color_b.sliderReleased.connect(self.on_material_slider_released)
+        self.color_b.valueChanged.connect(self.on_material_value_changed)
+        b_layout.addWidget(self.color_b)
+        color_layout.addLayout(b_layout)
+        
+        # Color picker button
+        picker_layout = QHBoxLayout()
+        picker_btn = QPushButton("Open Color Picker")
+        picker_btn.clicked.connect(self.open_color_picker)
+        picker_layout.addWidget(picker_btn)
+        color_layout.addLayout(picker_layout)
+        
+        color_group.setLayout(color_layout)
+        layout.addWidget(color_group)
+        
+        # HSV picker group
+        hsv_group = QGroupBox("HSV Picker")
+        hsv_layout = QFormLayout()
+        self.h_slider = QSlider(Qt.Horizontal)
+        self.h_slider.setRange(0, 360)
+        self.h_slider.setValue(0)
+        self.s_slider = QSlider(Qt.Horizontal)
+        self.s_slider.setRange(0, 100)
+        self.s_slider.setValue(100)
+        self.v_slider = QSlider(Qt.Horizontal)
+        self.v_slider.setRange(0, 100)
+        self.v_slider.setValue(90)
+        
+        for s in (self.h_slider, self.s_slider, self.v_slider):
+            s.valueChanged.connect(self.on_hsv_changed)
+        
+        hsv_layout.addRow("Hue", self.h_slider)
+        hsv_layout.addRow("Saturation", self.s_slider)
+        hsv_layout.addRow("Value", self.v_slider)
+        
+        apply_hsv_btn = QPushButton("Apply HSV to Selected")
+        apply_hsv_btn.clicked.connect(self.apply_hsv_to_selected)
+        hsv_layout.addRow(apply_hsv_btn)
+        
+        hsv_group.setLayout(hsv_layout)
+        layout.addWidget(hsv_group)
+        
+        # Material properties group (only show for non-lights)
+        self.material_props_group = QGroupBox("Material Properties")
+        material_props_layout = QVBoxLayout()
+        
+        # Metallic with delayed update
+        metallic_layout = QHBoxLayout()
+        metallic_layout.addWidget(QLabel("Metallic:"))
+        self.metallic = QSlider(Qt.Horizontal)
+        self.metallic.setRange(0, 100)
+        self.metallic.setValue(90)
+        self.metallic.sliderReleased.connect(self.on_material_slider_released)
+        self.metallic.valueChanged.connect(self.on_material_value_changed)
+        metallic_layout.addWidget(self.metallic)
+        material_props_layout.addLayout(metallic_layout)
+        
+        # Roughness with delayed update
+        roughness_layout = QHBoxLayout()
+        roughness_layout.addWidget(QLabel("Roughness:"))
+        self.roughness = QSlider(Qt.Horizontal)
+        self.roughness.setRange(0, 100)
+        self.roughness.setValue(10)
+        self.roughness.sliderReleased.connect(self.on_material_slider_released)
+        self.roughness.valueChanged.connect(self.on_material_value_changed)
+        roughness_layout.addWidget(self.roughness)
+        material_props_layout.addLayout(roughness_layout)
+        
+        self.material_props_group.setLayout(material_props_layout)
+        layout.addWidget(self.material_props_group)
+        
+        # Light intensity group (only show for lights)
+        self.light_group = QGroupBox("Light Properties")
+        light_layout = QVBoxLayout()
+        
+        light_intensity_layout = QHBoxLayout()
+        light_intensity_layout.addWidget(QLabel("Light Power:"))
+        self.light_intensity = QDoubleSpinBox()
+        self.light_intensity.setRange(0.1, 100.0)
+        self.light_intensity.setSingleStep(0.5)
+        self.light_intensity.setValue(15.0)
+        self.light_intensity.setDecimals(1)
+        self.light_intensity.valueChanged.connect(self.on_light_intensity_changed)
+        light_intensity_layout.addWidget(self.light_intensity)
+        light_layout.addLayout(light_intensity_layout)
+        
+        self.light_group.setLayout(light_layout)
+        layout.addWidget(self.light_group)
+        
+        # Initially hide both groups until we know object type
+        self.material_props_group.setVisible(False)
+        self.light_group.setVisible(False)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_texture_tab(self):
+        """Create texture controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Texture type selection
+        texture_group = QGroupBox("Texture Type")
+        texture_layout = QVBoxLayout()
+        
+        self.texture_type = QComboBox()
+        for tex_type in self.raytracer.get_available_textures():
+            self.texture_type.addItem(tex_type.title())
+        self.texture_type.currentTextChanged.connect(self.on_texture_type_changed)
+        texture_layout.addWidget(self.texture_type)
+        
+        # Texture parameters
+        self.texture_params_widget = QWidget()
+        self.texture_params_layout = QVBoxLayout()
+        self.texture_params_widget.setLayout(self.texture_params_layout)
+        texture_layout.addWidget(self.texture_params_widget)
+        
+        texture_group.setLayout(texture_layout)
+        layout.addWidget(texture_group)
+        
+        # Load texture from file
+        file_group = QGroupBox("Load Texture from File")
+        file_layout = QVBoxLayout()
+        
+        self.texture_file_label = QLabel("No file selected")
+        self.texture_file_label.setStyleSheet("color: #aaa; font-style: italic;")
+        file_layout.addWidget(self.texture_file_label)
+        
+        load_texture_btn = QPushButton("Browse...")
+        load_texture_btn.clicked.connect(self.load_texture_file)
+        file_layout.addWidget(load_texture_btn)
+        
+        apply_texture_btn = QPushButton("Apply Texture to Selected Object")
+        apply_texture_btn.clicked.connect(self.apply_texture)
+        file_layout.addWidget(apply_texture_btn)
+        
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+        
+        # Preset textures
+        preset_group = QGroupBox("Preset Textures")
+        preset_layout = QGridLayout()
+        
+        # Wood
+        wood_btn = QPushButton("Wood")
+        wood_btn.clicked.connect(lambda: self.apply_preset_texture("wood"))
+        preset_layout.addWidget(wood_btn, 0, 0)
+        
+        # Marble
+        marble_btn = QPushButton("Marble")
+        marble_btn.clicked.connect(lambda: self.apply_preset_texture("marble"))
+        preset_layout.addWidget(marble_btn, 0, 1)
+        
+        # Metal
+        metal_btn = QPushButton("Metal")
+        metal_btn.clicked.connect(lambda: self.apply_preset_texture("metal"))
+        preset_layout.addWidget(metal_btn, 1, 0)
+        
+        # Checker
+        checker_btn = QPushButton("Checker")
+        checker_btn.clicked.connect(lambda: self.apply_preset_texture("checker"))
+        preset_layout.addWidget(checker_btn, 1, 1)
+        
+        # Noise
+        noise_btn = QPushButton("Noise")
+        noise_btn.clicked.connect(lambda: self.apply_preset_texture("noise"))
+        preset_layout.addWidget(noise_btn, 2, 0)
+        
+        # Remove texture
+        remove_btn = QPushButton("Remove Texture")
+        remove_btn.clicked.connect(lambda: self.apply_preset_texture("none"))
+        preset_layout.addWidget(remove_btn, 2, 1)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_skybox_tab(self):
+        """Create skybox controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Skybox type selection
+        type_group = QGroupBox("Skybox Type")
+        type_layout = QVBoxLayout()
+        
+        self.skybox_type = QComboBox()
+        for skybox in self.raytracer.get_available_skyboxes():
+            self.skybox_type.addItem(skybox.title())
+        self.skybox_type.currentTextChanged.connect(self.on_skybox_type_changed)
+        type_layout.addWidget(self.skybox_type)
+        
+        type_group.setLayout(type_layout)
+        layout.addWidget(type_group)
+        
+        # Skybox color controls
+        color_group = QGroupBox("Skybox Colors")
+        color_layout = QVBoxLayout()
+        
+        # Color 1
+        color1_layout = QHBoxLayout()
+        color1_layout.addWidget(QLabel("Primary:"))
+        self.skybox_color1_r = QSpinBox()
+        self.skybox_color1_g = QSpinBox()
+        self.skybox_color1_b = QSpinBox()
+        for spinner in [self.skybox_color1_r, self.skybox_color1_g, self.skybox_color1_b]:
+            spinner.setRange(0, 100)
+            spinner.setValue(70)
+            spinner.valueChanged.connect(self.on_skybox_color_changed)
+        color1_layout.addWidget(QLabel("R:"))
+        color1_layout.addWidget(self.skybox_color1_r)
+        color1_layout.addWidget(QLabel("G:"))
+        color1_layout.addWidget(self.skybox_color1_g)
+        color1_layout.addWidget(QLabel("B:"))
+        color1_layout.addWidget(self.skybox_color1_b)
+        color_layout.addLayout(color1_layout)
+        
+        # Color 2
+        color2_layout = QHBoxLayout()
+        color2_layout.addWidget(QLabel("Secondary:"))
+        self.skybox_color2_r = QSpinBox()
+        self.skybox_color2_g = QSpinBox()
+        self.skybox_color2_b = QSpinBox()
+        for spinner in [self.skybox_color2_r, self.skybox_color2_g, self.skybox_color2_b]:
+            spinner.setRange(0, 100)
+            spinner.setValue(90)
+            spinner.valueChanged.connect(self.on_skybox_color_changed)
+        color2_layout.addWidget(QLabel("R:"))
+        color2_layout.addWidget(self.skybox_color2_r)
+        color2_layout.addWidget(QLabel("G:"))
+        color2_layout.addWidget(self.skybox_color2_g)
+        color2_layout.addWidget(QLabel("B:"))
+        color2_layout.addWidget(self.skybox_color2_b)
+        color_layout.addLayout(color2_layout)
+        
+        color_group.setLayout(color_layout)
+        layout.addWidget(color_group)
+        
+        # Load skybox image
+        image_group = QGroupBox("Skybox Image")
+        image_layout = QVBoxLayout()
+        
+        self.skybox_file_label = QLabel("No image loaded")
+        self.skybox_file_label.setStyleSheet("color: #aaa; font-style: italic;")
+        image_layout.addWidget(self.skybox_file_label)
+        
+        load_skybox_btn = QPushButton("Load Skybox Image...")
+        load_skybox_btn.clicked.connect(self.load_skybox_image)
+        image_layout.addWidget(load_skybox_btn)
+        
+        image_group.setLayout(image_layout)
+        layout.addWidget(image_group)
+        
+        # Preset skyboxes
+        preset_group = QGroupBox("Preset Skyboxes")
+        preset_layout = QGridLayout()
+        
+        # Gradient
+        gradient_btn = QPushButton("Gradient")
+        gradient_btn.clicked.connect(lambda: self.apply_preset_skybox("gradient"))
+        preset_layout.addWidget(gradient_btn, 0, 0)
+        
+        # Sunset
+        sunset_btn = QPushButton("Sunset")
+        sunset_btn.clicked.connect(lambda: self.apply_preset_skybox("sunset"))
+        preset_layout.addWidget(sunset_btn, 0, 1)
+        
+        # Atmosphere
+        atmosphere_btn = QPushButton("Atmosphere")
+        atmosphere_btn.clicked.connect(lambda: self.apply_preset_skybox("atmosphere"))
+        preset_layout.addWidget(atmosphere_btn, 1, 0)
+        
+        # Night
+        night_btn = QPushButton("Night")
+        night_btn.clicked.connect(lambda: self.apply_preset_skybox("night"))
+        preset_layout.addWidget(night_btn, 1, 1)
+        
+        # Studio
+        studio_btn = QPushButton("Studio")
+        studio_btn.clicked.connect(lambda: self.apply_preset_skybox("studio"))
+        preset_layout.addWidget(studio_btn, 2, 0)
+        
+        preset_group.setLayout(preset_layout)
+        layout.addWidget(preset_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def create_denoiser_tab(self):
+        """Create denoiser controls tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Denoiser settings group
+        denoiser_group = QGroupBox("Denoiser Settings")
+        denoiser_layout = QVBoxLayout()
+        
+        self.show_denoisers = QCheckBox("Show Denoisers")
+        self.show_denoisers.setChecked(self.raytracer.settings['show_denoisers'])
+        self.show_denoisers.toggled.connect(self.on_show_denoisers_changed)
+        denoiser_layout.addWidget(self.show_denoisers)
+        
+        denoiser_methods_layout = QVBoxLayout()
+        denoiser_methods_layout.addWidget(QLabel("Denoiser Methods:"))
+        
+        self.denoiser_bilateral = QCheckBox("Bilateral")
+        self.denoiser_bilateral.setChecked('bilateral' in self.raytracer.settings['selected_denoisers'])
+        self.denoiser_bilateral.toggled.connect(self.on_denoiser_selection_changed)
+        denoiser_methods_layout.addWidget(self.denoiser_bilateral)
+        
+        self.denoiser_nlmeans = QCheckBox("NL-Means")
+        self.denoiser_nlmeans.setChecked('nlmeans' in self.raytracer.settings['selected_denoisers'])
+        self.denoiser_nlmeans.toggled.connect(self.on_denoiser_selection_changed)
+        denoiser_methods_layout.addWidget(self.denoiser_nlmeans)
+        
+        self.denoiser_gaussian = QCheckBox("Gaussian")
+        self.denoiser_gaussian.setChecked('gaussian' in self.raytracer.settings['selected_denoisers'])
+        self.denoiser_gaussian.toggled.connect(self.on_denoiser_selection_changed)
+        denoiser_methods_layout.addWidget(self.denoiser_gaussian)
+        
+        self.denoiser_median = QCheckBox("Median")
+        self.denoiser_median.setChecked('median' in self.raytracer.settings['selected_denoisers'])
+        self.denoiser_median.toggled.connect(self.on_denoiser_selection_changed)
+        denoiser_methods_layout.addWidget(self.denoiser_median)
+        
+        denoiser_layout.addLayout(denoiser_methods_layout)
+        denoiser_group.setLayout(denoiser_layout)
+        layout.addWidget(denoiser_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    # ==================== NEW EVENT HANDLERS ====================
+    
+    def on_texture_type_changed(self, texture_type):
+        """Handle texture type change - update parameter controls"""
+        # Clear current parameters
+        while self.texture_params_layout.count():
+            item = self.texture_params_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        texture_type = texture_type.lower()
+        
+        if texture_type == "noise":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.noise_scale = QDoubleSpinBox()
+            self.noise_scale.setRange(0.1, 10.0)
+            self.noise_scale.setValue(1.0)
+            self.noise_scale.setSingleStep(0.1)
+            scale_layout.addWidget(self.noise_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "checker":
+            # Scale
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.checker_scale = QDoubleSpinBox()
+            self.checker_scale.setRange(1.0, 50.0)
+            self.checker_scale.setValue(10.0)
+            self.checker_scale.setSingleStep(1.0)
+            scale_layout.addWidget(self.checker_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+            # Color 1
+            color1_layout = QHBoxLayout()
+            color1_layout.addWidget(QLabel("Color 1:"))
+            self.checker_color1_r = QSpinBox()
+            self.checker_color1_g = QSpinBox()
+            self.checker_color1_b = QSpinBox()
+            for spinner in [self.checker_color1_r, self.checker_color1_g, self.checker_color1_b]:
+                spinner.setRange(0, 100)
+                spinner.setValue(90)
+            color1_layout.addWidget(QLabel("R:"))
+            color1_layout.addWidget(self.checker_color1_r)
+            color1_layout.addWidget(QLabel("G:"))
+            color1_layout.addWidget(self.checker_color1_g)
+            color1_layout.addWidget(QLabel("B:"))
+            color1_layout.addWidget(self.checker_color1_b)
+            self.texture_params_layout.addLayout(color1_layout)
+            
+            # Color 2
+            color2_layout = QHBoxLayout()
+            color2_layout.addWidget(QLabel("Color 2:"))
+            self.checker_color2_r = QSpinBox()
+            self.checker_color2_g = QSpinBox()
+            self.checker_color2_b = QSpinBox()
+            for spinner in [self.checker_color2_r, self.checker_color2_g, self.checker_color2_b]:
+                spinner.setRange(0, 100)
+                spinner.setValue(10)
+            color2_layout.addWidget(QLabel("R:"))
+            color2_layout.addWidget(self.checker_color2_r)
+            color2_layout.addWidget(QLabel("G:"))
+            color2_layout.addWidget(self.checker_color2_g)
+            color2_layout.addWidget(QLabel("B:"))
+            color2_layout.addWidget(self.checker_color2_b)
+            self.texture_params_layout.addLayout(color2_layout)
+            
+        elif texture_type == "wood":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.wood_scale = QDoubleSpinBox()
+            self.wood_scale.setRange(1.0, 20.0)
+            self.wood_scale.setValue(5.0)
+            self.wood_scale.setSingleStep(0.5)
+            scale_layout.addWidget(self.wood_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "marble":
+            scale_layout = QHBoxLayout()
+            scale_layout.addWidget(QLabel("Scale:"))
+            self.marble_scale = QDoubleSpinBox()
+            self.marble_scale.setRange(1.0, 20.0)
+            self.marble_scale.setValue(3.0)
+            self.marble_scale.setSingleStep(0.5)
+            scale_layout.addWidget(self.marble_scale)
+            self.texture_params_layout.addLayout(scale_layout)
+            
+        elif texture_type == "metal":
+            roughness_layout = QHBoxLayout()
+            roughness_layout.addWidget(QLabel("Roughness Variation:"))
+            self.metal_roughness = QDoubleSpinBox()
+            self.metal_roughness.setRange(0.0, 0.5)
+            self.metal_roughness.setValue(0.1)
+            self.metal_roughness.setSingleStep(0.05)
+            roughness_layout.addWidget(self.metal_roughness)
+            self.texture_params_layout.addLayout(roughness_layout)
+    
+    def load_texture_file(self):
+        """Load texture from file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Texture Image", 
+            "textures", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
         )
+        
+        if filename:
+            self.texture_file_label.setText(f"Selected: {filename.split('/')[-1]}")
+            self.texture_file_path = filename
     
-    def return_to_previous_mode(self):
-        """Return to previous rendering mode"""
-        if self.previous_mode == RenderMode.RAYTRACING:
-            # Reset interaction state
-            self.interaction_in_progress = False
-            
-            # Switch back to ray tracing
-            self.current_mode = RenderMode.RAYTRACING
-            self.is_rendering = True
-        else:
-            self.current_mode = self.previous_mode
-
-class SceneManager:
-    """Manages scene creation and object manipulation"""
-    
-    @staticmethod
-    def create_interactive_scene() -> Scene:
-        """Create a scene with interactive objects"""
-        scene = Scene()
-        scene.background_color = Vector3(0.05, 0.05, 0.1)
+    def apply_texture(self):
+        """Apply selected texture to object"""
+        texture_type = self.texture_type.currentText().lower()
+        params = {}
         
-        # Ground
-        ground_material = Material()
-        ground_material.albedo = Vector3(0.9, 0.9, 0.9)
-        ground = Sphere()
-        ground.center = Vector3(0, -100.5, 0)
-        ground.radius = 100.0
-        ground.material = ground_material
-        ground.object_id = 0
-        ground.name = "Ground"
-        scene.add_sphere(ground)
-        
-        # Interactive objects
-        objects_data = [
-            # Main spheres
-            {"pos": (-2.0, 0.5, -3.0), "color": (0.9, 0.1, 0.1), 
-             "metal": 0.9, "rough": 0.1, "radius": 0.5, "name": "Red Metallic"},
-            {"pos": (0.0, 0.5, -3.0), "color": (0.1, 0.9, 0.1), 
-             "metal": 0.0, "rough": 0.3, "radius": 0.5, "name": "Green Dielectric"},
-            {"pos": (2.0, 0.5, -3.0), "color": (0.1, 0.1, 0.9), 
-             "metal": 0.0, "rough": 0.0, "radius": 0.5, "name": "Blue Glass"},
+        if texture_type == "noise":
+            params['scale'] = self.noise_scale.value()
             
-            # Additional spheres
-            {"pos": (-1.0, 0.3, -1.5), "color": (0.9, 0.9, 0.1), 
-             "metal": 0.5, "rough": 0.2, "radius": 0.3, "name": "Yellow Mixed"},
-            {"pos": (1.0, 0.3, -1.5), "color": (0.9, 0.1, 0.9), 
-             "metal": 0.2, "rough": 0.8, "radius": 0.3, "name": "Purple Rough"},
+        elif texture_type == "checker":
+            params['scale'] = self.checker_scale.value()
+            from cpp_raytracer.raytracer_cpp import Vector3
+            params['color1'] = Vector3(
+                self.checker_color1_r.value() / 100.0,
+                self.checker_color1_g.value() / 100.0,
+                self.checker_color1_b.value() / 100.0
+            )
+            params['color2'] = Vector3(
+                self.checker_color2_r.value() / 100.0,
+                self.checker_color2_g.value() / 100.0,
+                self.checker_color2_b.value() / 100.0
+            )
             
-            # Lights
-            {"pos": (0, 3, -1), "color": (1, 1, 1), "emission": (10, 10, 8),
-             "metal": 0.0, "rough": 0.1, "radius": 0.3, "name": "Main Light"},
-            {"pos": (-2, 2, 0), "color": (1, 1, 1), "emission": (5, 3, 2),
-             "metal": 0.0, "rough": 0.1, "radius": 0.2, "name": "Warm Light"},
-            {"pos": (2, 2, 0), "color": (1, 1, 1), "emission": (2, 3, 5),
-             "metal": 0.0, "rough": 0.1, "radius": 0.2, "name": "Cool Light"},
-        ]
-        
-        for i, data in enumerate(objects_data, 1):
-            material = Material()
-            material.albedo = Vector3(*data["color"])
-            material.metallic = data["metal"]
-            material.roughness = data["rough"]
+        elif texture_type == "wood":
+            params['scale'] = self.wood_scale.value()
             
-            if "emission" in data:
-                material.emission = Vector3(*data["emission"])
+        elif texture_type == "marble":
+            params['scale'] = self.marble_scale.value()
+            
+        elif texture_type == "metal":
+            params['roughness_variation'] = self.metal_roughness.value()
+            
+        elif texture_type == "image":
+            if hasattr(self, 'texture_file_path'):
+                params['filename'] = self.texture_file_path
             else:
-                material.emission = Vector3(0, 0, 0)
-            
-            sphere = Sphere()
-            sphere.center = Vector3(*data["pos"])
-            sphere.radius = data["radius"]
-            sphere.material = material
-            sphere.object_id = i
-            sphere.name = data["name"]
-            scene.add_sphere(sphere)
+                self.texture_file_label.setText("Please select a file first!")
+                return
         
-        scene.build_bvh()
-        return scene
-
-class Renderer:
-    """Handles different rendering modes"""
+        self.raytracer.apply_texture_to_object(texture_type, params)
     
-    def __init__(self, width: int, height: int, camera: Camera, scene: Scene):
-        self.width = width
-        self.height = height
-        self.camera = camera
-        self.scene = scene
+    def apply_preset_texture(self, texture_name):
+        """Apply preset texture"""
+        params = {}
         
-        # Buffers
-        self.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
-        self.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+        if texture_name == "wood":
+            params['scale'] = 5.0
+        elif texture_name == "marble":
+            params['scale'] = 3.0
+        elif texture_name == "metal":
+            params['roughness_variation'] = 0.1
+        elif texture_name == "checker":
+            from cpp_raytracer.raytracer_cpp import Vector3
+            params['color1'] = Vector3(0.9, 0.9, 0.9)
+            params['color2'] = Vector3(0.1, 0.1, 0.1)
+            params['scale'] = 10.0
+        elif texture_name == "noise":
+            params['scale'] = 1.0
+        
+        self.raytracer.apply_texture_to_object(texture_name, params)
     
-    def render_silhouette(self, selected_object_id: int = -1) -> np.ndarray:
-        """Render silhouette view for fast object editing"""
-        self.silhouette_buffer.fill(0)
-        width, height = self.width, self.height
-        
-        # Use the same camera setup as in C++ Camera::get_ray()
-        fov = self.camera.fov * 3.14159 / 180.0
-        aspect_ratio = width / height
-        tan_fov = math.tan(fov / 2.0)
-        
-        # Camera basis vectors (same as in C++)
-        forward = (self.camera.target - self.camera.position).normalize()
-        right = forward.cross(Vector3(0, 1, 0)).normalize()
-        up = right.cross(forward).normalize()
-        
-        # Helper function to project 3D point to 2D screen
-        def project_point(point: Vector3):
-            # Convert from world to camera space
-            obj_pos = point - self.camera.position
-            
-            # Compute coordinates in camera basis
-            z_cam = obj_pos.dot(forward)
-            if z_cam <= 0.001:  # Behind or too close to camera
-                return None
-            
-            x_cam = obj_pos.dot(right)
-            y_cam = obj_pos.dot(up)
-            
-            # Apply perspective projection (same as C++ get_ray but inverted)
-            # FIX: Added * 0.5 factor to match C++ ray generation
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
-            
-            # Clamp to screen bounds
-            x_screen = max(0, min(width - 1, x_screen))
-            y_screen = max(0, min(height - 1, y_screen))
-            
-            return (int(x_screen), int(y_screen), z_cam)
-        
-        # Render all spheres
-        for sphere in self.scene.spheres:
-            if sphere.object_id == 0:  # Skip ground
-                continue
-            
-            # Project sphere center
-            projected = project_point(sphere.center)
-            if projected is None:
-                continue
-                
-            x_screen, y_screen, z_cam = projected
-            
-            # Calculate projected radius using perspective - FIXED
-            # The correct formula: radius_pixels = (sphere_radius / distance) * (screen_height / (2 * tan_fov))
-            sphere_radius_pixels = (sphere.radius / z_cam) * (height / (2 * tan_fov))
-            radius = max(2, int(sphere_radius_pixels))
-            
-            if 0 <= x_screen < width and 0 <= y_screen < height:
-                center = (int(x_screen), int(y_screen))
-                
-                # Color coding
-                if sphere.object_id == selected_object_id:
-                    color = (255, 255, 0)  # Yellow for selected
-                    thickness = 3
-                else:
-                    color = (200, 200, 200)  # Gray for others
-                    thickness = 1
-                
-                cv2.circle(self.silhouette_buffer, center, radius, color, thickness)
-                
-                # Crosshair for selected
-                if sphere.object_id == selected_object_id:
-                    cv2.line(self.silhouette_buffer,
-                            (center[0] - 10, center[1]),
-                            (center[0] + 10, center[1]),
-                            (0, 255, 255), 2)
-                    cv2.line(self.silhouette_buffer,
-                            (center[0], center[1] - 10),
-                            (center[0], center[1] + 10),
-                            (0, 255, 255), 2)
-        
-        return self.silhouette_buffer.astype(np.float32) / 255.0
-
-    def render_wireframe(self, selected_object_id: int = -1) -> np.ndarray:
-        """Render wireframe view for fast camera navigation"""
-        self.wireframe_buffer.fill(0)
-        width, height = self.width, self.height
-        
-        # Camera parameters
-        fov = self.camera.fov * 3.14159 / 180.0
-        aspect_ratio = width / height
-        tan_fov = math.tan(fov / 2.0)  # Changed from np.tan to math.tan for consistency
-        
-        forward = (self.camera.target - self.camera.position).normalize()
-        right = forward.cross(Vector3(0, 1, 0)).normalize()
-        up = right.cross(forward).normalize()
-        
-        # Helper function with corrected projection
-        def project_point(point: Vector3) -> Optional[Tuple[int, int]]:
-            obj_pos = point - self.camera.position
-            z_cam = obj_pos.dot(forward)
-            
-            if z_cam <= 0.1:
-                return None
-            
-            x_cam = obj_pos.dot(right)
-            y_cam = obj_pos.dot(up)
-            
-            # Correct projection - FIXED: Added * 0.5 factor
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
-            
-            # Clamp to screen bounds
-            x_screen = max(0, min(width - 1, x_screen))
-            y_screen = max(0, min(height - 1, y_screen))
-            
-            return (int(x_screen), int(y_screen))
-        
-        # Draw ground grid
-        self._render_grid(project_point)
-        
-        # Draw spheres
-        for sphere in self.scene.spheres:
-            if sphere.object_id == 0:
-                continue
-            
-            center_screen = project_point(sphere.center)
-            if center_screen:
-                # Calculate screen radius - FIXED
-                distance = (sphere.center - self.camera.position).dot(forward)
-                if distance > 0:
-                    radius_screen = (sphere.radius / distance) * (height / (2 * tan_fov))
-                    radius_screen = max(2, int(radius_screen))
-                    
-                    # Color
-                    if sphere.object_id == selected_object_id:
-                        color = (255, 255, 0)
-                        thickness = 2
-                    else:
-                        color = (200, 200, 200)
-                        thickness = 1
-                    
-                    cv2.circle(self.wireframe_buffer, center_screen, radius_screen, color, thickness)
-                    
-                    # Axes for selected
-                    if sphere.object_id == selected_object_id:
-                        self._render_axes(sphere, center_screen, project_point)
-        
-        return self.wireframe_buffer.astype(np.float32) / 255.0
+    def on_skybox_type_changed(self, skybox_type):
+        """Handle skybox type change"""
+        self.raytracer.set_skybox_type(skybox_type.lower())
     
-    def _render_grid(self, project_point):
-        """Render ground grid"""
-        grid_size = 10
-        grid_step = 1.0
+    def on_skybox_color_changed(self):
+        """Handle skybox color changes"""
+        from cpp_raytracer.raytracer_cpp import Vector3
         
-        for i in range(-grid_size, grid_size + 1):
-            x = i * grid_step
-            
-            # X lines
-            for j in range(-grid_size, grid_size):
-                z1 = j * grid_step
-                z2 = (j + 1) * grid_step
-                
-                p1 = Vector3(x, 0, z1)
-                p2 = Vector3(x, 0, z2)
-                
-                s1 = project_point(p1)
-                s2 = project_point(p2)
-                
-                if s1 and s2:
-                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
-            
-            # Z lines
-            for j in range(-grid_size, grid_size):
-                x1 = j * grid_step
-                x2 = (j + 1) * grid_step
-                
-                p1 = Vector3(x1, 0, x)
-                p2 = Vector3(x2, 0, x)
-                
-                s1 = project_point(p1)
-                s2 = project_point(p2)
-                
-                if s1 and s2:
-                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
+        color1 = Vector3(
+            self.skybox_color1_r.value() / 100.0,
+            self.skybox_color1_g.value() / 100.0,
+            self.skybox_color1_b.value() / 100.0
+        )
+        
+        color2 = Vector3(
+            self.skybox_color2_r.value() / 100.0,
+            self.skybox_color2_g.value() / 100.0,
+            self.skybox_color2_b.value() / 100.0
+        )
+        
+        self.raytracer.set_skybox_colors(color1, color2)
     
-    def _render_axes(self, sphere: Sphere, center_screen: Tuple[int, int], project_point):
-        """Render XYZ axes for selected object"""
-        axes = [
-            (Vector3(0.5, 0, 0), (255, 0, 0)),   # X - Red
-            (Vector3(0, 0.5, 0), (0, 255, 0)),   # Y - Green
-            (Vector3(0, 0, -0.5), (0, 0, 255))   # Z - Blue
-        ]
+    def load_skybox_image(self):
+        """Load skybox from image file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Skybox Image", 
+            "textures", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
+        )
         
-        for axis_vec, axis_color in axes:
-            end = sphere.center + axis_vec
-            end_screen = project_point(end)
-            if end_screen:
-                cv2.line(self.wireframe_buffer, center_screen, end_screen, axis_color, 2)
-
-class RayTracerInteraction:
-    """Main class for interactive ray tracing"""
-    
-    def __init__(self, width: int = 640, height: int = 480, debug_mode: bool = False):
-        self.width = width
-        self.height = height
-        
-        # Initialize C++ ray tracer
-        self.ray_tracer = RayTracer()
-        self.scene = SceneManager.create_interactive_scene()
-        self.ray_tracer.set_scene(self.scene)
-        
-        # Get camera as a copy from C++ (we push updates back with set_camera)
-        self.camera = self.ray_tracer.get_camera()
-        self._init_camera()
-        # Immediately push our initialized camera back to C++ so both sides are in sync
-        self.ray_tracer.set_camera(self.camera)
-
-        
-        # Settings
-        self.settings = {
-            'max_samples': 32,
-            'samples_per_batch': 8,
-            'max_depth': 4,
-            'exposure': 1.5,
-            'enhance_image': True,
-            'show_denoisers': False,
-            'selected_denoisers': ['bilateral'],
-            'selected_object': 1,
-            'move_speed': 0.3,
-            'camera_move_speed': 0.1,
-            'camera_rotate_speed': 0.5,
-        }
-        
-        # Initialize components
-        self.camera_controller = CameraController(self.camera, self.settings)
-        self.object_dragger = ObjectDragger(self.scene, self.camera_controller, self.settings)
-        self.render_state = RenderStateManager(width, height)
-        self.renderer = Renderer(width, height, self.camera, self.scene)
-        
-        # Ray tracing state
-        self.accumulated_image = None
-        self.total_samples = 0
-        self.frame_queue = Queue()
-        
-        # Thread safety
-        self.render_lock = threading.RLock()
-        
-        # Denoiser
-        self.denoiser = Denoiser()
-        
-        # GUI reference for callbacks (set by GUI)
-        self._gui = None
-        
-        # Key state tracking
-        self._last_key_states = {}
-        self._last_key_event_time = 0
-        
-        # Fix: Camera auto-movement prevention
-        self._camera_auto_move_fix = False
-        self._last_manual_movement = 0
-        
-        # Start camera movement thread
-        self.camera_move_active = True
-        self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
-        self.camera_move_thread.start()
-        
-        print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
-        print(f"  Controls: WASD+Space/Ctrl to move, Right Mouse to rotate")
-        print(f"  Object Drag: Hold X/Y/Z + Left Click + Drag")
-    
-    def _init_camera(self):
-        """Initialize camera position and orientation"""
-        self.camera.position = Vector3(0, 1, 5)
-        self.camera.target = Vector3(0, 1, 4)
-        self.camera.up = Vector3(0, 1, 0)
-        self.camera.fov = 45.0
-
-
-    def reset_camera_and_rerender(self):
-        with self.render_lock:
-            # Reset camera to defaults
-            self._init_camera()
-
-            # Push camera to C++
-            self.ray_tracer.set_camera(self.camera)
-
-            # Force an immediate visual update
-            self.render_state.start_interaction()
-            self._process_frame_for_display(0.0)
-
-            # Restart ray tracing cleanly
-            self.render_state.set_mode(RenderMode.RAYTRACING)
-            self.restart_rendering()
-    
-
-    def set_object_color(self, r: float, g: float, b: float, apply_immediate: bool = True):
-        """Nastaví albedo (RGB) vybranému objektu."""
-        obj = self.get_selected_object()
-        if not obj:
-            return
-        obj.material.albedo = Vector3(r, g, b)
-        # ak je light, udržiavať intenzitu
-        if hasattr(obj.material, 'emission'):
-            if (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) > 0.001:
-                avg = (obj.material.emission.x + obj.material.emission.y + obj.material.emission.z) / 3.0
-                obj.material.emission = Vector3(r * avg, g * avg, b * avg)
-
-        if apply_immediate:
-            self.ray_tracer.set_scene(self.scene)
-            self.restart_rendering()
-
-    def set_object_color_hsv(self, h: float, s: float, v: float, apply_immediate: bool = True):
-        """Nastaví farbu pomocou HSV (h in degrees 0-360, s/v in 0-1)."""
-        # Convert HSV -> RGB
-        h_norm = (h % 360) / 360.0
-        i = int(h_norm * 6)
-        f = h_norm * 6 - i
-        p = v * (1 - s)
-        q = v * (1 - f * s)
-        t = v * (1 - (1 - f) * s)
-        i = i % 6
-        if i == 0:
-            r, g, b = v, t, p
-        elif i == 1:
-            r, g, b = q, v, p
-        elif i == 2:
-            r, g, b = p, v, t
-        elif i == 3:
-            r, g, b = p, q, v
-        elif i == 4:
-            r, g, b = t, p, v
-        else:
-            r, g, b = v, p, q
-
-        self.set_object_color(r, g, b, apply_immediate=apply_immediate)
-
-    def _procedural_noise_color(self, position, scale=1.0, octaves=3, base_hsv=None):
-        """Deterministický 'noise' color generator cez kombináciu sinusoid.
-        position: Vector3 (world pos)
-        base_hsv: optional tuple (h,s,v) to tint result
-        """
-        x, y, z = position.x * scale, position.y * scale, position.z * scale
-
-        # fractal sin/cos sum - deterministické a rýchle (bez externých knižníc)
-        r = g = b = 0.0
-        amp = 1.0
-        freq = 1.0
-        total_amp = 0.0
-        for o in range(max(1, int(octaves))):
-            r += amp * math.sin(x * freq + 0.37 * (o + 1))
-            g += amp * math.sin(y * freq + 1.17 * (o + 1))
-            b += amp * math.sin(z * freq + 2.41 * (o + 1))
-            total_amp += amp
-            amp *= 0.5
-            freq *= 2.0
-
-        # normalize - dostaneme hodnoty v ~[-1,1], posuňme do [0,1]
-        r = (r / total_amp) * 0.5 + 0.5
-        g = (g / total_amp) * 0.5 + 0.5
-        b = (b / total_amp) * 0.5 + 0.5
-
-        # optional tint by base_hsv
-        if base_hsv:
-            h, s, v = base_hsv
-            # convert generated RGB -> HSV -> scale V by generated average
-            avg = (r + g + b) / 3.0
-            # apply HSV base with v = avg, convert to rgb:
-            # reuse set_object_color_hsv conversion (but inline)
-            h_norm = (h % 360) / 360.0
-            ii = int(h_norm * 6) % 6
-            ff = h_norm * 6 - ii
-            pp = avg * (1 - s)
-            qq = avg * (1 - ff * s)
-            tt = avg * (1 - (1 - ff) * s)
-            if ii == 0:
-                r, g, b = avg, tt, pp
-            elif ii == 1:
-                r, g, b = qq, avg, pp
-            elif ii == 2:
-                r, g, b = pp, avg, tt
-            elif ii == 3:
-                r, g, b = pp, qq, avg
-            elif ii == 4:
-                r, g, b = tt, pp, avg
+        if filename:
+            success = self.raytracer.load_skybox_image(filename)
+            if success:
+                self.skybox_file_label.setText(f"Loaded: {filename.split('/')[-1]}")
             else:
-                r, g, b = avg, pp, qq
-
-        # clamp
-        r = max(0.0, min(1.0, r))
-        g = max(0.0, min(1.0, g))
-        b = max(0.0, min(1.0, b))
-
-        return r, g, b
-
-    def set_object_texture(self, texture_type: str, params: dict):
-        """Aplikuje textúru (procedurálnu) na vybraný objekt. texture_type: 'none'|'noise'|'marble' etc."""
-        obj = self.get_selected_object()
-        if not obj:
-            return False
-
-        if texture_type == 'none':
-            # nothing to do
-            return True
-
-        if texture_type == 'noise':
-            scale = float(params.get('scale', 1.0))
-            octaves = int(params.get('octaves', 3))
-            tint = params.get('tint_hsv', None)  # optionally (h,s,v)
-            r, g, b = self._procedural_noise_color(obj.center, scale=scale, octaves=octaves, base_hsv=tint)
-            obj.material.albedo = Vector3(r, g, b)
-            # Update scene & rerender
-            self.ray_tracer.set_scene(self.scene)
-            self.restart_rendering()
-            return True
-
-        # fallback: unsupported
-        return False
-
-    def resize_viewport(self, width: int, height: int):
-        """Dynamická zmena rozlíšenia okna - upraví buffery a reštartuje render."""
-        with self.render_lock:
-            self.width = max(1, int(width))
-            self.height = max(1, int(height))
-
-            # recreate render state / renderer so wireframe/silhouette use correct buffers
-            self.render_state = RenderStateManager(self.width, self.height)
-            self.renderer = Renderer(self.width, self.height, self.camera, self.scene)
-
-            # reset accumulation (important)
-            self.accumulated_image = None
-            self.total_samples = 0
-
-            # tell C++ side if it exposes resize (best-effort)
-            try:
-                if hasattr(self.ray_tracer, 'resize'):
-                    self.ray_tracer.resize(self.width, self.height)
-                else:
-                    # Some bindings expect set_resolution or using set_camera + render args; we leave call optional
-                    pass
-            except Exception:
-                pass
-
-            self.restart_rendering()
-            return True
-
-    def get_selected_object(self) -> Optional[Sphere]:
-        """Get currently selected object"""
-        selected_idx = self.settings['selected_object']
-        return self._get_sphere_by_id(selected_idx)
+                self.skybox_file_label.setText("Failed to load image!")
     
-    def select_object_by_click(self, x: float, y: float) -> bool:
-        """Select object by screen coordinates using ray casting"""
-        try:
-            with self.render_lock:
-                # Convert screen coordinates to NDC
-                ndc_x = (2.0 * x - 1.0)
-                ndc_y = (1.0 - 2.0 * y)
-                
-                # Get camera parameters
-                camera = self.camera
-                fov = camera.fov * 3.14159 / 180.0
-                aspect_ratio = self.width / self.height
-                tan_fov = math.tan(fov / 2.0)
-                
-                # Calculate camera basis
-                forward = (camera.target - camera.position).normalize()
-                right = forward.cross(Vector3(0, 1, 0)).normalize()
-                up = right.cross(forward).normalize()
-                
-                # Calculate ray direction
-                ray_dir_x = ndc_x * tan_fov * aspect_ratio
-                ray_dir_y = ndc_y * tan_fov
-                ray_dir = (forward + right * ray_dir_x + up * ray_dir_y).normalize()
-                
-                # Find closest intersected object
-                closest_t = float('inf')
-                closest_obj_id = -1
-                
-                for sphere in self.scene.spheres:
-                    # Skip ground for selection
-                    if sphere.object_id == 0:
-                        continue
-                        
-                    # Sphere intersection test
-                    oc = camera.position - sphere.center
-                    a = ray_dir.dot(ray_dir)
-                    b = 2.0 * oc.dot(ray_dir)
-                    c = oc.dot(oc) - sphere.radius * sphere.radius
-                    discriminant = b * b - 4 * a * c
-                    
-                    if discriminant > 0:
-                        t = (-b - math.sqrt(discriminant)) / (2.0 * a)
-                        if t > 0.001 and t < closest_t:
-                            closest_t = t
-                            closest_obj_id = sphere.object_id
-                
-                if closest_obj_id >= 0:
-                    self.settings['selected_object'] = closest_obj_id
-                    self.object_dragger.selected_object_id = closest_obj_id
-                    
-                    # Update GUI if available
-                    if self._gui:
-                        try:
-                            self._gui.control_panel.object_select.setCurrentIndex(closest_obj_id)
-                            self._gui.control_panel.update_object_info()
-                            self._gui.control_panel.update_material_sliders()
-                        except:
-                            pass
-                    
-                    return True
-                    
-        except Exception as e:
-            print(f"Object selection error: {e}")
-            import traceback
-            traceback.print_exc()
+    def apply_preset_skybox(self, skybox_name):
+        """Apply preset skybox"""
+        self.raytracer.set_skybox_type(skybox_name)
+        self.skybox_type.setCurrentText(skybox_name.title())
+    
+    def on_material_preset_changed(self, index):
+        """Handle material preset selection"""
+        preset_name = self.material_preset.currentText()
+        self.raytracer.apply_material_preset(preset_name)
+    
+    # ==================== EXISTING EVENT HANDLERS ====================
+    
+    def on_settings_changed(self):
+        """Handle settings changes"""
+        self.raytracer.settings['max_samples'] = self.max_samples.value()
+        self.raytracer.settings['samples_per_batch'] = self.samples_batch.value()
+        self.raytracer.settings['max_depth'] = self.max_depth.value()
+        self.raytracer.settings['exposure'] = self.exposure.value()
+        self.raytracer.restart_rendering()
+    
+    def on_enhance_changed(self, checked):
+        """Handle enhance contrast toggle"""
+        self.raytracer.settings['enhance_image'] = checked
+    
+    def on_camera_pos_changed(self):
+        """Update camera position"""
+        from cpp_raytracer.raytracer_cpp import Vector3
+        pos = Vector3(self.cam_x.value(), self.cam_y.value(), self.cam_z.value())
+        self.raytracer.camera.position = pos
         
-        return False
+        # Update ray tracer camera
+        rt_camera = self.raytracer.ray_tracer.get_camera()
+        rt_camera.position = pos
+        
+        # Update camera controller frame
+        self.raytracer.camera_controller.update_camera_frame()
+        self.raytracer.restart_rendering()
     
-    def move_object(self, dx: float, dy: float, dz: float):
-        """Move selected object with keyboard"""
-        with self.render_lock:
-            obj = self.get_selected_object()
-            if obj and obj.object_id > 0:
-                speed = self.settings['move_speed']
-                
-                # Calculate movement in world space
-                if abs(dx) > 0:
-                    obj.center.x += dx * speed
-                if abs(dy) > 0:
-                    obj.center.y += dy * speed
-                if abs(dz) > 0:
-                    obj.center.z += dz * speed
-                
-                # Apply bounds
-                obj.center.x = max(-8, min(8, obj.center.x))
-                obj.center.y = max(0.1, min(8, obj.center.y))
-                obj.center.z = max(-8, min(2, obj.center.z))
-                
-                # Update scene
-                self.ray_tracer.set_scene(self.scene)
-                self.restart_rendering()
-                
-                # Update GUI if available
-                if self._gui:
-                    self._gui.control_panel.update_object_info()
+    def on_camera_target_changed(self):
+        """Update camera target"""
+        from cpp_raytracer.raytracer_cpp import Vector3
+        target = Vector3(self.target_x.value(), self.target_y.value(), self.target_z.value())
+        self.raytracer.camera.target = target
+        
+        # Update ray tracer camera
+        rt_camera = self.raytracer.ray_tracer.get_camera()
+        rt_camera.target = target
+        
+        # Update camera controller frame
+        self.raytracer.camera_controller.update_camera_frame()
+        self.raytracer.restart_rendering()
     
-    def update_object_material(self, property_name: str, value: float):
-        """Update material property of selected object"""
-        obj = self.get_selected_object()
+    def on_camera_fov_changed(self):
+        """Update camera FOV"""
+        self.raytracer.camera.fov = self.fov.value()
+        
+        # Update ray tracer camera
+        rt_camera = self.raytracer.ray_tracer.get_camera()
+        rt_camera.fov = self.fov.value()
+        
+        self.raytracer.restart_rendering()
+    
+    def on_move_speed_changed(self):
+        """Update camera movement speed"""
+        self.raytracer.settings['camera_move_speed'] = self.move_speed.value()
+        self.raytracer.camera_controller.settings['camera_move_speed'] = self.move_speed.value()
+    
+    def on_rotate_speed_changed(self):
+        """Update camera rotation speed"""
+        self.raytracer.settings['camera_rotate_speed'] = self.rotate_speed.value()
+        self.raytracer.camera_controller.settings['camera_rotate_speed'] = self.rotate_speed.value()
+    
+    def on_object_speed_changed(self):
+        """Update object movement speed"""
+        self.raytracer.settings['move_speed'] = self.object_speed.value()
+    
+    def reset_camera(self):
+        """Reset camera to default"""
+        self.raytracer.reset_camera_and_rerender()
+        self.update_camera_info()
+    
+    def update_camera_info(self):
+        """Update camera controls from current camera"""
+        camera = self.raytracer.camera
+        if camera:
+            self.cam_x.blockSignals(True)
+            self.cam_y.blockSignals(True)
+            self.cam_z.blockSignals(True)
+            self.target_x.blockSignals(True)
+            self.target_y.blockSignals(True)
+            self.target_z.blockSignals(True)
+            self.fov.blockSignals(True)
+            
+            self.cam_x.setValue(camera.position.x)
+            self.cam_y.setValue(camera.position.y)
+            self.cam_z.setValue(camera.position.z)
+            self.target_x.setValue(camera.target.x)
+            self.target_y.setValue(camera.target.y)
+            self.target_z.setValue(camera.target.z)
+            self.fov.setValue(camera.fov)
+            
+            self.cam_x.blockSignals(False)
+            self.cam_y.blockSignals(False)
+            self.cam_z.blockSignals(False)
+            self.target_x.blockSignals(False)
+            self.target_y.blockSignals(False)
+            self.target_z.blockSignals(False)
+            self.fov.blockSignals(False)
+    
+    def on_object_selected(self, index):
+        """Handle object selection"""
+        self.raytracer.settings['selected_object'] = index
+        self.update_object_info()
+        self.update_material_sliders()
+    
+    def update_object_info(self):
+        """Update object information display"""
+        obj = self.raytracer.get_selected_object()
         if obj:
-            if property_name == 'albedo':
-                obj.material.albedo = Vector3(value, value, value)
-            elif property_name == 'metallic':
-                obj.material.metallic = value
-            elif property_name == 'roughness':
-                obj.material.roughness = value
+            name = obj.name if hasattr(obj, 'name') and obj.name else f"Object {obj.object_id}"
+            pos = obj.center
+            self.object_info.setText(f"Selected: {name} at ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})")
+        else:
+            self.object_info.setText("Selected: None")
+    
+    def update_material_sliders(self):
+        """Update material sliders to match selected object"""
+        obj = self.raytracer.get_selected_object()
+        
+        if obj:
+            mat = obj.material
             
-            self.restart_rendering()
+            self.metallic.blockSignals(True)
+            self.roughness.blockSignals(True)
+            self.color_r.blockSignals(True)
+            self.color_g.blockSignals(True)
+            self.color_b.blockSignals(True)
+            self.light_intensity.blockSignals(True)
+            
+            if hasattr(mat.albedo, 'x'):
+                # Convert from Vector3(x=R, y=G, z=B) to RGB sliders
+                self.color_r.setValue(int(mat.albedo.x * 100))  # Red channel
+                self.color_g.setValue(int(mat.albedo.y * 100))  # Green channel
+                self.color_b.setValue(int(mat.albedo.z * 100))  # Blue channel
+            
+            # Check if it's a light source
+            is_light = False
+            if hasattr(mat, 'emission'):
+                emission = mat.emission
+                is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
+            
+            # Show/hide appropriate controls
+            if is_light:
+                # For lights: show light controls, hide material controls
+                self.material_props_group.setVisible(False)
+                self.light_group.setVisible(True)
+                
+                # Update light intensity
+                if hasattr(mat.emission, 'x'):
+                    emission = mat.emission
+                    avg_emission = (emission.x + emission.y + emission.z) / 3.0
+                    self.light_intensity.setValue(avg_emission)
+            else:
+                # For non-lights: show material controls, hide light controls
+                self.material_props_group.setVisible(True)
+                self.light_group.setVisible(False)
+                
+                # Update material properties
+                self.metallic.setValue(int(mat.metallic * 100))
+                self.roughness.setValue(int(mat.roughness * 100))
+            
+            self.metallic.blockSignals(False)
+            self.roughness.blockSignals(False)
+            self.color_r.blockSignals(False)
+            self.color_g.blockSignals(False)
+            self.color_b.blockSignals(False)
+            self.light_intensity.blockSignals(False)
     
-    def update_object_material_immediate(self):
-        """Update material immediately and restart rendering"""
-        with self.render_lock:
-            self.ray_tracer.set_scene(self.scene)
-            self.restart_rendering()
+    def on_material_value_changed(self):
+        """Handle material value changes without immediate update"""
+        # Just update display, don't apply changes yet
+        self.material_update_timer.stop()
+        self.material_update_timer.start(1000)  # 1 second delay
     
-    def update_light_intensity(self, intensity: float):
-        """Update light intensity for selected light"""
-        obj = self.get_selected_object()
+    def on_material_slider_released(self):
+        """Apply material changes when slider is released"""
+        self.apply_material_changes()
+    
+    def apply_material_changes(self):
+        """Apply all pending material changes"""
+        if self.material_update_timer.isActive():
+            self.material_update_timer.stop()
+        
+        obj = self.raytracer.get_selected_object()
+        if obj:
+            # RGB sliders to Vector3(R, G, B)
+            r = self.color_r.value() / 100.0
+            g = self.color_g.value() / 100.0
+            b = self.color_b.value() / 100.0
+            obj.material.albedo = Vector3(r, g, b)
+            
+            # Check if it's a light source
+            is_light = False
+            if hasattr(obj.material, 'emission'):
+                emission = obj.material.emission
+                is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
+            
+            # Only update metallic/roughness for non-lights
+            if not is_light:
+                obj.material.metallic = self.metallic.value() / 100.0
+                obj.material.roughness = self.roughness.value() / 100.0
+                # Update the material in the ray tracer
+                self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+                self.raytracer.restart_rendering()
+            else:
+                # For lights, update emission color to match albedo with current intensity
+                current_intensity = (obj.material.emission.x + 
+                                   obj.material.emission.y + 
+                                   obj.material.emission.z) / 3.0
+                if current_intensity > 0:
+                    obj.material.emission = Vector3(
+                        r * current_intensity,
+                        g * current_intensity,
+                        b * current_intensity
+                    )
+                    # Update the scene
+                    self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+                    self.raytracer.restart_rendering()
+    
+    def on_light_intensity_changed(self, value):
+        """Handle light intensity changes"""
+        obj = self.raytracer.get_selected_object()
         if obj and hasattr(obj.material, 'emission'):
             emission = obj.material.emission
             
@@ -942,537 +1390,891 @@ class RayTracerInteraction:
             is_light = emission.x > 0.1 or emission.y > 0.1 or emission.z > 0.1
             
             if is_light:
-                # Map intensity to emission color preserving ratios
-                current_max = max(emission.x, emission.y, emission.z)
-                if current_max > 0:
-                    scale = intensity / current_max
-                    obj.material.emission = Vector3(
-                        emission.x * scale,
-                        emission.y * scale,
-                        emission.z * scale
-                    )
+                # Get current albedo color
+                albedo = obj.material.albedo
                 
-                # Update scene
-                self.ray_tracer.set_scene(self.scene)
-                self.restart_rendering()
-    
-    def add_object_to_scene(self):
-        """Add a new sphere to the scene"""
-        with self.render_lock:
-            # Find next available object ID
-            max_id = 0
-            for sphere in self.scene.spheres:
-                if sphere.object_id > max_id:
-                    max_id = sphere.object_id
-
-            # Create new sphere
-            new_sphere = Sphere()
-            new_sphere.center = Vector3(0, 2, -3)  # Default position
-            new_sphere.radius = 0.5
-
-            # Create material
-            material = Material()
-            material.albedo = Vector3(0.8, 0.8, 0.8)
-            material.metallic = 0.0
-            material.roughness = 0.5
-            material.emission = Vector3(0, 0, 0)
-            material.ior = 1.5
-
-            new_sphere.material = material
-            new_sphere.object_id = max_id + 1
-            new_sphere.name = f"Sphere {max_id + 1}"
-
-            # Use C++ add_sphere so the native Scene container is updated correctly
-            try:
-                self.scene.add_sphere(new_sphere)
-            except Exception:
-                # Fallback if binding fails
-                self.scene.spheres.append(new_sphere)
-
-            # Rebuild BVH and notify the ray tracer
-            try:
-                self.scene.build_bvh()
-            except Exception:
-                pass
-            self.ray_tracer.set_scene(self.scene)
-
-            # Update selected object
-            self.settings['selected_object'] = new_sphere.object_id
-            self.object_dragger.selected_object_id = new_sphere.object_id
-
-            # GUI updates (best-effort)
-            if self._gui:
-                try:
-                    self._gui.control_panel.update_object_list()
-                    self._gui.control_panel.object_select.setCurrentIndex(new_sphere.object_id)
-                    self._gui.control_panel.update_object_info()
-                    self._gui.control_panel.update_material_sliders()
-                except:
-                    pass
-
-            print(f"Added new sphere with ID {new_sphere.object_id}")
-            self.restart_rendering()
-            return new_sphere.object_id
-
-    
-    def remove_object_from_scene(self, object_id: int):
-        """Remove object from scene by ID"""
-        with self.render_lock:
-            removed = False
-            # Prefer calling C++ remove_sphere if available
-            if hasattr(self.scene, "remove_sphere"):
-                try:
-                    self.scene.remove_sphere(object_id)
-                    removed = True
-                except Exception:
-                    removed = False
-
-            if not removed:
-                # Fallback to removing in Python (this may or may not reflect to C++ depending on binding)
-                for i, sphere in enumerate(list(self.scene.spheres)):
-                    if sphere.object_id == object_id:
-                        del self.scene.spheres[i]
-                        removed = True
-                        break
-
-            if not removed:
-                print(f"Object with ID {object_id} not found")
-                return False
-
-            # Rebuild BVH and set scene
-            try:
-                self.scene.build_bvh()
-            except Exception:
-                pass
-            self.ray_tracer.set_scene(self.scene)
-
-            # Update selected object to next available
-            self.settings['selected_object'] = 0
-            self.object_dragger.selected_object_id = 0
-            for sphere in self.scene.spheres:
-                if sphere.object_id > 0:
-                    self.settings['selected_object'] = sphere.object_id
-                    self.object_dragger.selected_object_id = sphere.object_id
-                    break
-
-            # GUI updates
-            if self._gui:
-                try:
-                    self._gui.control_panel.update_object_list()
-                    self._gui.control_panel.update_object_info()
-                    self._gui.control_panel.update_material_sliders()
-                except:
-                    pass
-
-            self.restart_rendering()
-            return True
-
-    
-    def _get_sphere_by_id(self, object_id: int) -> Optional[Sphere]:
-        """Helper method to get sphere by object ID"""
-        for sphere in self.scene.spheres:
-            if sphere.object_id == object_id:
-                return sphere
-        return None
-    
-    # ------------------------------------------------------------------
-    # Camera Control Methods
-    # ------------------------------------------------------------------
-    
-    def set_camera_key_state(self, key: str, state: bool):
-        """Update camera key state with better handling"""
-        if key not in self.camera_controller.keys_pressed:
-            return
-
-        with self.render_lock:
-            old_state = self.camera_controller.keys_pressed[key]
-
-            # Only process if state actually changed
-            if state == old_state:
-                return
-
-            self.camera_controller.keys_pressed[key] = state
-
-            current_time = time.time()
-            if state:
-                self._last_manual_movement = current_time
-                # Start interaction when any key is pressed
-                if self.render_state.current_mode == RenderMode.RAYTRACING:
-                    self.render_state.start_interaction()
-                    self._process_frame_for_display(0.016)
-
-            # If all released, perform cleanup immediately
-            all_released = not any(self.camera_controller.keys_pressed.values())
-            if all_released and not self.camera_controller.rotating:
-                # push camera and return to raytracing immediately
-                self._handle_all_keys_released()
-
-    
-    def start_camera_rotation(self, x: float, y: float):
-        """Start camera rotation with mouse"""
-        with self.render_lock:
-            self.camera_controller.rotating = True
-            self.camera_controller.last_mouse_pos = (x, y)
-            self.render_state.start_interaction()
-    
-    def update_camera_rotation(self, dx: float, dy: float):
-        """Update camera rotation based on mouse movement"""
-        with self.render_lock:
-            if not self.camera_controller.rotating:
-                return
-            
-            self.render_state.update_interaction()
-            self.camera_controller.rotate(dx, dy)
-            
-            # Also update the ray tracer's camera
-            self.ray_tracer.set_camera(self.camera)
-            # Force display update
-            self._process_frame_for_display(0.05)
-    
-    def stop_camera_rotation(self):
-        """Stop camera rotation and return to previous mode"""
-        with self.render_lock:
-            was_rotating = self.camera_controller.rotating
-            self.camera_controller.rotating = False
-            self.camera_controller.last_mouse_pos = None
-            
-            if was_rotating:
-                self._handle_rotation_stopped()
-    
-    # ------------------------------------------------------------------
-    # Object Dragging Methods
-    # ------------------------------------------------------------------
-    
-    def start_object_dragging(self, x: float, y: float) -> bool:
-        """Start dragging an object"""
-        # First try to select the object
-        if self.select_object_by_click(x, y):
-            obj = self.get_selected_object()
-            if obj and obj.object_id > 0:  # Don't drag ground
-                self.object_dragger.dragging = True
-                self.object_dragger.selected_object_id = obj.object_id
-                self.object_dragger.drag_start_pos = (x, y)
-                self.object_dragger.drag_start_object_pos = obj.center
-                
-                # Update render state
-                if self.render_state.current_mode == RenderMode.RAYTRACING:
-                    self.render_state.set_mode(RenderMode.SILHOUETTE)
-                
-                return True
-        return False
-    
-    def update_object_dragging(self, dx: float, dy: float):
-        """Update object position during dragging"""
-        if not self.object_dragger.dragging:
-            return
-        
-        self.object_dragger.update_drag(dx, dy)
-        
-        # Update ray tracer scene
-        self.ray_tracer.set_scene(self.scene)
-        self._process_frame_for_display(0.016)
-    
-    def stop_object_dragging(self):
-        """Stop dragging object"""
-        self.object_dragger.stop_drag()
-        self.render_state.set_mode(RenderMode.RAYTRACING)
-        self.restart_rendering()
-    
-    def set_dimension_lock(self, dimension: str, state: bool):
-        """Lock/unlock a dimension for dragging"""
-        self.object_dragger.set_dimension_lock(dimension, state)
-    
-    # ------------------------------------------------------------------
-    # Rendering Methods
-    # ------------------------------------------------------------------
-    
-    def restart_rendering(self):
-        """Restart ray tracing"""
-        with self.render_lock:
-            self.render_state.is_rendering = False
-            time.sleep(0.02)
-            
-            self.accumulated_image = None
-            self.total_samples = 0
-            self.frame_queue = Queue()
-            
-            self.start_rendering()
-    
-    def start_rendering(self):
-        """Start progressive rendering"""
-        if self.render_state.is_rendering:
-            return
-        
-        self.render_state.is_rendering = True
-        self.accumulated_image = np.zeros((self.height, self.width, 3), dtype=np.float32)
-        self.total_samples = 0
-        
-        render_thread = threading.Thread(target=self._render_worker)
-        render_thread.daemon = True
-        render_thread.start()
-    
-    # ------------------------------------------------------------------
-    # Internal Worker Methods
-    # ------------------------------------------------------------------
-    
-    def _camera_move_worker(self):
-        """Continuous camera movement worker thread with frame limiting"""
-        limiter = FrameRateLimiter(30)
-        
-        while self.camera_move_active:
-            try:
-                current_time = time.time()
-                
-                # Check for manual movement and prevent auto-movement
-                keys_pressed = any(self.camera_controller.keys_pressed.values())
-                is_moving = keys_pressed or self.camera_controller.rotating
-                
-                if is_moving:
-                    # Update interaction time to prevent premature return to raytracing
-                    self._last_manual_movement = current_time
-                    self.render_state.update_interaction()
-                    
-                    # Process movement if we're supposed to be moving
-                    if limiter.should_update():
-                        self._process_camera_movement()
-                        limiter.update()
-                
-                # Check if should return to ray tracing after interaction timeout
-                time_since_last_manual = current_time - self._last_manual_movement
-                
-                if (self.render_state.should_return_to_raytracing() and
-                    not any(self.camera_controller.keys_pressed.values()) and
-                    not self.camera_controller.rotating and
-                    time_since_last_manual > 0.5):  # 500ms delay after manual movement
-                    
-                    with self.render_lock:
-                        # Double-check no keys are pressed
-                        if not any(self.camera_controller.keys_pressed.values()) and not self.camera_controller.rotating:
-                            # Switch back to ray tracing
-                            self.render_state.set_mode(RenderMode.RAYTRACING)
-                            self.restart_rendering()
-                
-                time.sleep(0.01)
-                
-            except Exception as e:
-                print(f"Camera worker error: {e}")
-                time.sleep(0.1)
-    
-    def _process_camera_movement(self):
-        """Process continuous camera movement"""
-        with self.render_lock:
-            if not any(self.camera_controller.keys_pressed.values()):
-                return
-                
-            move_vector = self.camera_controller.get_movement_vector()
-            
-            if move_vector.length() > 0:
-                # Apply movement to BOTH the camera and ray tracer camera
-                self.camera.position = self.camera.position + move_vector
-                self.camera.target = self.camera.target + move_vector
-                
-                # Update ray tracer camera
-                self.ray_tracer.set_camera(self.camera)
-                
-                # Apply bounds
-                self.camera_controller.apply_bounds()
-                self.camera_controller.update_camera_frame()
-                
-                # Ensure we're in wireframe mode during movement
-                if self.render_state.current_mode != RenderMode.WIREFRAME:
-                    self.render_state.set_mode(RenderMode.WIREFRAME)
-                
-                # Force a wireframe update
-                self._process_frame_for_display(0.05)
-    
-    def _render_worker(self):
-        """Worker function for ray tracing"""
-        try:
-            while (self.render_state.is_rendering and 
-                   self.total_samples < self.settings['max_samples']):
-                
-                start_time = time.time()
-                
-                with self.render_lock:
-                    result = self.ray_tracer.render(
-                        self.width, self.height,
-                        self.settings['samples_per_batch'],
-                        self.settings['max_depth']
-                    )
-                
-                if result is None or len(result) == 0:
-                    continue
-                
-                # Process batch
-                batch_image = np.array(result, dtype=np.float32).reshape(
-                    (self.height, self.width, 3)
+                # Scale the albedo by the intensity to get emission color
+                obj.material.emission = Vector3(
+                    albedo.x * value,
+                    albedo.y * value,
+                    albedo.z * value
                 )
-                render_time = time.time() - start_time
                 
-                batch_samples = self.settings['samples_per_batch']
-                
-                if self.total_samples == 0:
-                    self.accumulated_image = batch_image
-                    self.total_samples = batch_samples
+                # Update the scene
+                self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+                self.raytracer.restart_rendering()
+    
+    def on_show_denoisers_changed(self, checked):
+        """Handle show denoisers toggle"""
+        self.raytracer.settings['show_denoisers'] = checked
+    
+    def on_denoiser_selection_changed(self):
+        """Handle denoiser selection changes"""
+        selected = []
+        if self.denoiser_bilateral.isChecked():
+            selected.append('bilateral')
+        if self.denoiser_nlmeans.isChecked():
+            selected.append('nlmeans')
+        if self.denoiser_gaussian.isChecked():
+            selected.append('gaussian')
+        if self.denoiser_median.isChecked():
+            selected.append('median')
+        
+        self.raytracer.settings['selected_denoisers'] = selected
+    
+    # ------------------------------------------------------------------
+    # Object Management Methods
+    # ------------------------------------------------------------------
+    
+    def _move_object(self, dx, dy, dz):
+        """Helper method to move selected object"""
+        self.raytracer.move_object(dx, dy, dz)
+        self.update_object_info()
+    
+    def update_object_list(self):
+        """Update object dropdown list"""
+        current_index = self.object_select.currentIndex()
+        self.object_select.clear()
+        
+        # Populate objects
+        for i in range(self.raytracer.get_object_count() + 1):
+            sphere = self.raytracer._get_sphere_by_id(i)
+            if sphere:
+                if hasattr(sphere, 'name') and sphere.name:
+                    self.object_select.addItem(sphere.name)
                 else:
-                    total_old = self.total_samples
-                    total_new = self.total_samples + batch_samples
-                    
-                    weight_old = total_old / total_new
-                    weight_new = batch_samples / total_new
-                    
-                    self.accumulated_image = (
-                        self.accumulated_image * weight_old +
-                        batch_image * weight_new
-                    )
-                    self.total_samples = total_new
-                
-                # Send frame if needed
-                if (self.total_samples % self.settings['samples_per_batch'] == 0 or
-                    self.total_samples >= self.settings['max_samples']):
-                    self._process_frame_for_display(render_time)
-                
-                time.sleep(0.005)
-                
+                    name = "Ground" if i == 0 else f"Object {i}"
+                    self.object_select.addItem(name)
+            else:
+                name = "Ground" if i == 0 else f"Object {i}"
+                self.object_select.addItem(name)
+        
+        # Restore selection
+        if current_index < self.object_select.count():
+            self.object_select.setCurrentIndex(current_index)
+        else:
+            self.object_select.setCurrentIndex(self.raytracer.settings['selected_object'])
+    
+    def update_object_count(self):
+        """Update object count display"""
+        count = self.raytracer.get_object_count()
+        self.object_count_label.setText(f"Objects: {count}")
+    
+    def add_object(self):
+        """Add a new object to the scene"""
+        try:
+            # Generate unique name and ID
+            obj_count = self.raytracer.get_object_count()
+            new_id = self.raytracer.add_object_to_scene()
+            
+            if new_id is None:
+                print("Failed to add object")
+                return
+            
+            # Update UI
+            self.update_object_list()
+            self.update_object_count()
+            
+            # Select the new object
+            self.object_select.setCurrentIndex(new_id)
+            self.on_object_selected(new_id)
+            
+            print(f"Added object with ID: {new_id}")
+            
         except Exception as e:
-            print(f"Rendering error: {e}")
+            print(f"Error adding object: {e}")
             import traceback
             traceback.print_exc()
-        
-        self.frame_queue.put({'done': True})
-        self.render_state.is_rendering = False
+    
+    def remove_object(self):
+        """Remove selected object from scene"""
+        try:
+            obj = self.raytracer.get_selected_object()
+            if obj and obj.object_id > 0:  # Don't remove ground
+                print(f"Removing object: {obj.object_id}")
+                success = self.raytracer.remove_object_from_scene(obj.object_id)
+                if success:
+                    self.update_object_list()
+                    self.update_object_count()
+                    # Update the selection to the first available object
+                    if self.object_select.count() > 0:
+                        self.object_select.setCurrentIndex(0)
+                        self.on_object_selected(0)
+                else:
+                    print("Failed to remove object")
+        except Exception as e:
+            print(f"Error removing object: {e}")
+            import traceback
+            traceback.print_exc()
     
     # ------------------------------------------------------------------
-    # Frame Processing Methods
+    # New functionality from interaction.py
     # ------------------------------------------------------------------
     
-    def _process_frame_for_display(self, render_time: float):
-        """Process frame for display based on current mode"""
-        if self.render_state.current_mode == RenderMode.SILHOUETTE:
-            display_image = self.renderer.render_silhouette(
-                self.object_dragger.selected_object_id
-            )
-            enhanced_image = display_image
-            mode_str = "silhouette"
-            denoised_images = {}
-            
-        elif self.render_state.current_mode == RenderMode.WIREFRAME:
-            display_image = self.renderer.render_wireframe(
-                self.object_dragger.selected_object_id
-            )
-            enhanced_image = display_image
-            mode_str = "wireframe"
-            denoised_images = {}
-            
-        else:  # RAYTRACING
-            if self.accumulated_image is None:
-                return
-            
-            display_image = self._tone_map(self.accumulated_image, self.settings['exposure'])
-            enhanced_image = self._enhance_display(display_image) if self.settings['enhance_image'] else display_image
-            mode_str = "raytracing"
-            
-            # Apply denoisers if needed
-            denoised_images = {}
-            if self.settings['show_denoisers'] and self.settings['selected_denoisers']:
-                for method in self.settings['selected_denoisers']:
-                    try:
-                        denoised_images[method] = self.denoiser.denoise(display_image, method)
-                    except Exception as e:
-                        print(f"Denoising error: {e}")
+    def open_color_picker(self):
+        """Open color picker dialog"""
+        color = QColorDialog.getColor()
+        if not color.isValid():
+            return
+        r = color.red() / 255.0
+        g = color.green() / 255.0
+        b = color.blue() / 255.0
+
+        # Update sliders to match
+        self.color_r.blockSignals(True)
+        self.color_g.blockSignals(True)
+        self.color_b.blockSignals(True)
+        self.color_r.setValue(int(r * 100))
+        self.color_g.setValue(int(g * 100))
+        self.color_b.setValue(int(b * 100))
+        self.color_r.blockSignals(False)
+        self.color_g.blockSignals(False)
+        self.color_b.blockSignals(False)
+
+        # Apply the color
+        self.raytracer.set_object_color(r, g, b)
+    
+    def on_hsv_changed(self, _=None):
+        """Update RGB sliders to show selected HSV"""
+        h = self.h_slider.value()
+        s = self.s_slider.value() / 100.0
+        v = self.v_slider.value() / 100.0
         
-        frame_data = {
-            'display': display_image,
-            'enhanced': enhanced_image,
-            'denoised': denoised_images,
-            'samples': self.total_samples,
-            'render_time': render_time,
-            'mode': mode_str,
-            'is_raytracing': self.render_state.current_mode == RenderMode.RAYTRACING
+        # Convert HSV->RGB
+        h_norm = (h % 360) / 360.0
+        i = int(h_norm * 6)
+        f = h_norm * 6 - i
+        p = v * (1 - s)
+        q = v * (1 - f * s)
+        t = v * (1 - (1 - f) * s)
+        i_mod = i % 6
+        
+        if i_mod == 0:
+            r, g, b = v, t, p
+        elif i_mod == 1:
+            r, g, b = q, v, p
+        elif i_mod == 2:
+            r, g, b = p, v, t
+        elif i_mod == 3:
+            r, g, b = p, q, v
+        elif i_mod == 4:
+            r, g, b = t, p, v
+        else:
+            r, g, b = v, p, q
+
+        # Update RGB sliders (but don't trigger material update)
+        self.color_r.blockSignals(True)
+        self.color_g.blockSignals(True)
+        self.color_b.blockSignals(True)
+        self.color_r.setValue(int(r * 100))
+        self.color_g.setValue(int(g * 100))
+        self.color_b.setValue(int(b * 100))
+        self.color_r.blockSignals(False)
+        self.color_g.blockSignals(False)
+        self.color_b.blockSignals(False)
+    
+    def apply_hsv_to_selected(self):
+        """Apply HSV color to selected object"""
+        h = self.h_slider.value()
+        s = self.s_slider.value() / 100.0
+        v = self.v_slider.value() / 100.0
+        self.raytracer.set_object_color_hsv(h, s, v)
+    
+    def on_texture_type_changed_scene(self, txt):
+        """Handle texture type change in scene tab"""
+        # Currently just a placeholder
+        pass
+    
+    def apply_texture_to_selected(self):
+        """Apply texture to selected object in scene tab"""
+        tex_type = self.texture_select.currentText()
+        params = {
+            'scale': float(self.tex_scale.value()),
+            'octaves': int(self.tex_octaves.value()),
+            'tint_hsv': (int(self.tint_h.value()), int(self.tint_s.value())/100.0, 1.0) if self.tint_s.value() > 0 else None
+        }
+        success = self.raytracer.apply_texture_to_object(tex_type, params)
+        if not success:
+            print("Texture apply failed or unknown texture type")
+    
+    def on_apply_resolution(self):
+        """Apply new viewport resolution"""
+        try:
+            w = int(self.res_w.text())
+            h = int(self.res_h.text())
+            if w <= 0 or h <= 0:
+                raise ValueError("Invalid resolution")
+            # Note: resize_viewport method would need to be implemented
+            print(f"Resolution change requested: {w}x{h}")
+        except Exception as e:
+            print(f"Invalid resolution: {e}")
+
+class GUI(QMainWindow):
+    """Main application window"""
+    
+    def __init__(self):
+        super().__init__()
+        self.raytracer = RayTracerInteraction(640, 480)
+        self.render_thread = None
+        
+        # Give raytracer a reference to the GUI for callbacks
+        self.raytracer._gui = self
+        
+        # Camera key mapping
+        self.camera_keys = {
+            Qt.Key_W: 'forward',
+            Qt.Key_S: 'backward',
+            Qt.Key_A: 'left',
+            Qt.Key_D: 'right',
+            Qt.Key_Space: 'up',
+            Qt.Key_Control: 'down',
         }
         
-        self.frame_queue.put(frame_data)
-    
-    # ------------------------------------------------------------------
-    # Internal Helper Methods
-    # ------------------------------------------------------------------
-    
-    def _handle_all_keys_released(self):
-        """Handle when all movement keys are released"""
-        print(f"All keys released, previous mode: {self.render_state.previous_mode}")
+        # Object movement keys (different from camera keys)
+        self.object_keys = {
+            Qt.Key_I: (0, 1, 0),   # Up
+            Qt.Key_K: (0, -1, 0),  # Down
+            Qt.Key_J: (-1, 0, 0),  # Left
+            Qt.Key_L: (1, 0, 0),   # Right
+            Qt.Key_U: (0, 0, -1),  # Forward
+            Qt.Key_O: (0, 0, 1),   # Backward
+        }
         
-        if self.render_state.previous_mode == RenderMode.RAYTRACING:
-            # Small delay to ensure all key events are processed
-            time.sleep(0.02)
-            
-            # Double-check no keys are pressed
-            if not any(self.camera_controller.keys_pressed.values()):
-                # Update ray tracer camera
-                self.ray_tracer.set_camera(self.camera)
-                self.render_state.set_mode(RenderMode.RAYTRACING)
-                self.restart_rendering()
-        else:
-            self.render_state.return_to_previous_mode()
-            self._process_frame_for_display(0.016)
-    
-    def _handle_rotation_stopped(self):
-        """Handle when camera rotation stops"""
-        if self.render_state.previous_mode == RenderMode.RAYTRACING:
-            # Reset interaction state
-            self.render_state.interaction_in_progress = False
-            
-            # Short delay before returning to ray tracing
-            time.sleep(0.05)
-            
-            # Switch back to ray tracing
-            self.render_state.set_mode(RenderMode.RAYTRACING)
-            print("Camera rotation stopped, returning to ray tracing")
-            
-            # Restart ray tracing
-            self.restart_rendering()
-        else:
-            # Return to whatever mode we were in before
-            self.render_state.return_to_previous_mode()
-            self._process_frame_for_display(0.016)
-    
-    def _tone_map(self, image: np.ndarray, exposure: float) -> np.ndarray:
-        """Apply tone mapping"""
-        image = image * exposure
-        image = image / (1.0 + image)
-        return np.clip(image, 0.0, 1.0)
-    
-    def _enhance_display(self, image: np.ndarray) -> np.ndarray:
-        """Enhance contrast"""
-        min_val = np.percentile(image, 2)
-        max_val = np.percentile(image, 98)
+        # Object dragging state
+        self.dragging_object = False
+        self.dimension_locks = {'x': False, 'y': False, 'z': False}
         
-        if max_val > min_val:
-            enhanced = (image - min_val) / (max_val - min_val)
-            return np.clip(enhanced, 0, 1)
-        return image
+        # Track manual mode changes vs automatic ones
+        self.manual_mode_change = False
+        
+        self.setup_ui()
+        self.setup_rendering()
+
+        # Timer for updating camera controls
+        self.camera_update_timer = QTimer()
+        self.camera_update_timer.timeout.connect(self.update_camera_controls)
+        self.camera_update_timer.start(100)  # Update every 100ms
+        
+        # Fix: Prevent auto-movement by clearing key states on focus loss
+        self._key_states_cleared = False
     
-    # ------------------------------------------------------------------
-    # Public Getter Methods
-    # ------------------------------------------------------------------
+    def setup_ui(self):
+        """Setup the main UI"""
+        self.setWindowTitle("C++ Ray Tracer - Interactive Controls with Skybox & Textures")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QHBoxLayout()
+        central_widget.setLayout(main_layout)
+        
+        # Left side - Image displays
+        left_widget = self.create_image_displays()
+        main_layout.addWidget(left_widget, 3)
+        
+        # Right side - Scrollable control panel
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setMaximumWidth(500)
+        
+        self.control_panel = ScrollableTabbedControlPanel(self.raytracer)
+        scroll_area.setWidget(self.control_panel)
+        
+        main_layout.addWidget(scroll_area, 1)
+        
+        # Status bar
+        self.status_label = QLabel("Ready to render...")
+        self.statusBar().addWidget(self.status_label)
+        
+        # Mode indicator
+        self.mode_label = QLabel("Mode: Ray Tracing")
+        self.mode_label.setStyleSheet("color: #88c; font-weight: bold;")
+        self.statusBar().addPermanentWidget(self.mode_label)
+        
+        # Lock status
+        self.lock_label = QLabel("Locks: None")
+        self.statusBar().addPermanentWidget(self.lock_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self.progress_bar)
+        
+        # Apply dark theme
+        self.apply_dark_theme()
+        
+        # Focus policy
+        self.setFocusPolicy(Qt.StrongFocus)
     
-    def get_object_count(self) -> int:
-        """Get number of interactive objects (excluding ground)"""
-        return len(self.scene.spheres) - 1
+    def apply_dark_theme(self):
+        """Apply dark theme styling"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 5px;
+                margin-top: 1ex;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: #88c;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid #444;
+                height: 8px;
+                background: #333;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #88c;
+                border: 1px solid #55a;
+                width: 18px;
+                margin: -2px 0;
+                border-radius: 9px;
+            }
+            QCheckBox {
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 13px;
+                height: 13px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #666;
+                background: #333;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #88c;
+                background: #55a;
+            }
+            QComboBox {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 1px 18px 1px 3px;
+                min-width: 6em;
+                background: #333;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                border: none;
+            }
+            QSpinBox, QDoubleSpinBox {
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 1px;
+                background: #333;
+            }
+            QTabWidget::pane {
+                border: 1px solid #444;
+                background-color: #2b2b2b;
+            }
+            QTabBar::tab {
+                background-color: #333;
+                color: #aaa;
+                padding: 8px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #444;
+                color: #fff;
+                border-bottom: 2px solid #88c;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QPushButton {
+                background-color: #444;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 5px 10px;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #555;
+                border-color: #666;
+            }
+            QPushButton:pressed {
+                background-color: #333;
+            }
+            QScrollArea {
+                border: none;
+                background-color: #2b2b2b;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #333;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #555;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #666;
+            }
+        """)
     
-    def has_frames(self) -> bool:
-        """Check if frames are available"""
-        return not self.frame_queue.empty()
+    def create_image_displays(self):
+        """Create the image display area"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+        
+        # Mode selector
+        mode_widget = QWidget()
+        mode_layout = QHBoxLayout()
+        mode_widget.setLayout(mode_layout)
+        
+        self.raytrace_btn = QPushButton("Ray Tracing")
+        self.raytrace_btn.setCheckable(True)
+        self.raytrace_btn.setChecked(True)
+        self.raytrace_btn.clicked.connect(self.on_raytrace_mode)
+        mode_layout.addWidget(self.raytrace_btn)
+        
+        self.wireframe_btn = QPushButton("Wireframe")
+        self.wireframe_btn.setCheckable(True)
+        self.wireframe_btn.clicked.connect(self.on_wireframe_mode)
+        mode_layout.addWidget(self.wireframe_btn)
+        
+        self.silhouette_btn = QPushButton("Silhouette")
+        self.silhouette_btn.setCheckable(True)
+        self.silhouette_btn.clicked.connect(self.on_silhouette_mode)
+        mode_layout.addWidget(self.silhouette_btn)
+        
+        mode_layout.addStretch()
+        layout.addWidget(mode_widget)
+        
+        # Tab widget for different views
+        self.tabs = QTabWidget()
+        
+        # Main view tab
+        main_tab = QWidget()
+        main_layout = QVBoxLayout()
+        main_tab.setLayout(main_layout)
+        
+        self.main_display = ImageDisplay()
+        self.main_display.mouse_pressed.connect(self.on_mouse_press)
+        self.main_display.mouse_moved.connect(self.on_mouse_drag)
+        self.main_display.mouse_released.connect(self.on_mouse_release)
+        self.main_display.right_click.connect(self.on_right_click)
+        main_layout.addWidget(self.main_display)
+        
+        self.tabs.addTab(main_tab, "Main View")
+        
+        # Enhanced view tab
+        enhanced_tab = QWidget()
+        enhanced_layout = QVBoxLayout()
+        enhanced_tab.setLayout(enhanced_layout)
+        
+        self.enhanced_display = ImageDisplay()
+        enhanced_layout.addWidget(self.enhanced_display)
+        
+        self.tabs.addTab(enhanced_tab, "Enhanced View")
+        
+        # Denoiser views tab
+        denoiser_tab = QWidget()
+        denoiser_layout = QVBoxLayout()
+        denoiser_tab.setLayout(denoiser_layout)
+        
+        denoiser_grid = QHBoxLayout()
+        
+        self.denoiser_displays = {}
+        methods = ['bilateral', 'nlmeans', 'gaussian', 'median']
+        for method in methods:
+            display_widget = QWidget()
+            display_layout = QVBoxLayout()
+            display_widget.setLayout(display_layout)
+            
+            label = QLabel(f"{method.title()} Denoised")
+            label.setAlignment(Qt.AlignCenter)
+            display_layout.addWidget(label)
+            
+            display = ImageDisplay()
+            display.setMinimumSize(300, 200)
+            display_layout.addWidget(display)
+            
+            denoiser_grid.addWidget(display_widget)
+            self.denoiser_displays[method] = display
+        
+        denoiser_layout.addLayout(denoiser_grid)
+        self.tabs.addTab(denoiser_tab, "Denoiser Views")
+        
+        layout.addWidget(self.tabs)
+        
+        # Instructions
+        instructions = QLabel(
+            "<b>Controls:</b> WASD+Space/Ctrl to move camera | "
+            "<b>Right Click + Drag</b> to rotate camera | "
+            "<b>Hold X/Y/Z + Left Click + Drag</b> to move object | "
+            "<b>IJKLOU</b> to move selected object | "
+            "<b>ESC</b> to cancel"
+        )
+        instructions.setStyleSheet("""
+            QLabel {
+                color: #aaa;
+                font-size: 10px;
+                padding: 5px;
+                background-color: #222;
+                border-radius: 3px;
+            }
+        """)
+        layout.addWidget(instructions)
+        
+        return widget
     
-    def get_frame(self) -> Optional[Dict]:
-        """Get next frame"""
-        try:
-            return self.frame_queue.get_nowait()
-        except:
-            return None
+    def setup_rendering(self):
+        """Setup rendering thread"""
+        self.render_thread = RenderThread(self.raytracer)
+        self.render_thread.frame_ready.connect(self.on_frame_ready)
+        self.render_thread.rendering_finished.connect(self.on_rendering_finished)
+        self.render_thread.start()
+
+    def update_camera_controls(self):
+        """Update camera control values from current camera state"""
+        if self.raytracer.camera:
+            camera = self.raytracer.camera
+            
+            # Update position controls
+            self.control_panel.cam_x.blockSignals(True)
+            self.control_panel.cam_y.blockSignals(True)
+            self.control_panel.cam_z.blockSignals(True)
+            
+            self.control_panel.cam_x.setValue(camera.position.x)
+            self.control_panel.cam_y.setValue(camera.position.y)
+            self.control_panel.cam_z.setValue(camera.position.z)
+            
+            self.control_panel.cam_x.blockSignals(False)
+            self.control_panel.cam_y.blockSignals(False)
+            self.control_panel.cam_z.blockSignals(False)
+            
+            # Update target controls
+            self.control_panel.target_x.blockSignals(True)
+            self.control_panel.target_y.blockSignals(True)
+            self.control_panel.target_z.blockSignals(True)
+            
+            self.control_panel.target_x.setValue(camera.target.x)
+            self.control_panel.target_y.setValue(camera.target.y)
+            self.control_panel.target_z.setValue(camera.target.z)
+            
+            self.control_panel.target_x.blockSignals(False)
+            self.control_panel.target_y.blockSignals(False)
+            self.control_panel.target_z.blockSignals(False)
     
-    def stop_rendering(self):
-        """Stop all rendering"""
-        self.render_state.is_rendering = False
-        self.camera_move_active = False
-        if self.camera_move_thread:
-            self.camera_move_thread.join(timeout=1.0)
+    def on_raytrace_mode(self):
+        """Switch to ray tracing mode"""
+        self.raytrace_btn.setChecked(True)
+        self.wireframe_btn.setChecked(False)
+        self.silhouette_btn.setChecked(False)
+        self.mode_label.setText("Mode: Ray Tracing")
+        self.mode_label.setStyleSheet("color: #88c; font-weight: bold;")
+        
+        # Update render state
+        self.raytracer.render_state.set_mode(RenderMode.RAYTRACING)
+        self.raytracer.restart_rendering()
+    
+    def on_wireframe_mode(self):
+        """Switch to wireframe mode - manual"""
+        self.manual_mode_change = True
+        self.raytrace_btn.setChecked(False)
+        self.wireframe_btn.setChecked(True)
+        self.silhouette_btn.setChecked(False)
+        
+        self.mode_label.setText("Mode: Wireframe")
+        self.mode_label.setStyleSheet("color: #0f0; font-weight: bold;")
+        
+        # Update render state
+        self.raytracer.render_state.set_mode(RenderMode.WIREFRAME)
+        self.raytracer.render_state.previous_mode = RenderMode.WIREFRAME
+        
+        # Force a frame update
+        self.manual_mode_change = False
+    
+    def on_silhouette_mode(self):
+        """Switch to silhouette mode - manual"""
+        self.manual_mode_change = True
+        self.raytrace_btn.setChecked(False)
+        self.wireframe_btn.setChecked(False)
+        self.silhouette_btn.setChecked(True)
+        
+        self.mode_label.setText("Mode: Silhouette")
+        self.mode_label.setStyleSheet("color: #ff0; font-weight: bold;")
+        
+        # Update render state
+        self.raytracer.render_state.set_mode(RenderMode.SILHOUETTE)
+        self.raytracer.render_state.previous_mode = RenderMode.SILHOUETTE
+        
+        # Force a frame update
+        self.manual_mode_change = False
+    
+    def on_frame_ready(self, frame_data):
+        """Handle new frame from render thread"""
+        # Update displays
+        self.main_display.set_image(frame_data['display'])
+        self.enhanced_display.set_image(frame_data['enhanced'])
+        
+        # Update denoiser displays if needed
+        if 'denoised' in frame_data:
+            for method, image in frame_data['denoised'].items():
+                if method in self.denoiser_displays:
+                    self.denoiser_displays[method].set_image(image)
+        
+        # Update status
+        mode = frame_data.get('mode', 'raytracing')
+        if mode == 'wireframe':
+            status = "Wireframe Mode - Right Drag to Rotate, WASD to Move"
+        elif mode == 'silhouette':
+            if self.dragging_object:
+                locks = self.get_lock_string()
+                status = f"Dragging Object - Locks: {locks}"
+            else:
+                status = "Silhouette Mode - Hold X/Y/Z + Drag to Move Objects"
+        else:
+            if frame_data['is_raytracing']:
+                status = (f"Samples: {frame_data['samples']} | "
+                         f"Batch Time: {frame_data['render_time']:.3f}s")
+            else:
+                status = "Ray Tracing Mode"
+        
+        self.status_label.setText(status)
+        
+        # Update progress bar
+        if frame_data.get('is_raytracing', False):
+            max_samples = self.raytracer.settings['max_samples']
+            progress = min(100, int((frame_data['samples'] / max_samples) * 100))
+            self.progress_bar.setValue(progress)
+            self.progress_bar.setVisible(progress < 100)
+        else:
+            self.progress_bar.setVisible(False)
+    
+    def on_rendering_finished(self):
+        """Handle rendering completion"""
+        self.status_label.setText("Rendering Complete!")
+        self.progress_bar.setVisible(False)
+    
+    def on_mouse_press(self, x: float, y: float, button: int):
+        """Handle mouse press"""
+        if button == Qt.LeftButton:
+            # Check if any dimension is locked
+            any_lock = any(self.dimension_locks.values())
+            
+            if any_lock:
+                # Start object dragging
+                if self.raytracer.start_object_dragging(x, y):
+                    self.dragging_object = True
+                    # Only switch to silhouette if not already in it
+                    if not self.silhouette_btn.isChecked() and not self.manual_mode_change:
+                        self.on_silhouette_mode()
+            else:
+                # Simple object selection
+                if self.raytracer.select_object_by_click(x, y):
+                    # Update control panel
+                    idx = self.raytracer.settings['selected_object']
+                    self.control_panel.object_select.setCurrentIndex(idx)
+                    self.control_panel.update_object_info()
+                    self.control_panel.update_material_sliders()
+        
+        elif button == Qt.RightButton:
+            # Start camera rotation
+            self.raytracer.start_camera_rotation(x, y)
+            # Only switch to wireframe if not manually in another mode
+            if not self.wireframe_btn.isChecked() and not self.manual_mode_change:
+                self.on_wireframe_mode()
+    
+    def on_right_click(self, x: float, y: float):
+        """Handle right click (alternative)"""
+        self.raytracer.start_camera_rotation(x, y)
+        if not self.wireframe_btn.isChecked():
+            self.on_wireframe_mode()
+    
+    def on_mouse_drag(self, dx: float, dy: float):
+        """Handle mouse dragging"""
+        if self.dragging_object:
+            # Object dragging
+            self.raytracer.update_object_dragging(dx, dy)
+            
+            # Update object info
+            obj = self.raytracer.get_selected_object()
+            if obj:
+                pos = obj.center
+                name = obj.name if hasattr(obj, 'name') and obj.name else f"Object {obj.object_id}"
+                self.control_panel.object_info.setText(
+                    f"Dragging: {name} at ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})"
+                )
+        
+        elif self.raytracer.camera_controller.rotating:
+            # Camera rotation
+            self.raytracer.update_camera_rotation(dx, dy)
+    
+    def on_mouse_release(self, button: int):
+        """Handle mouse release with proper mode restoration"""
+        if button == Qt.LeftButton and self.dragging_object:
+            self.raytracer.stop_object_dragging()
+            self.dragging_object = False
+            self.dimension_locks = {'x': False, 'y': False, 'z': False}
+            self.update_lock_status()
+            
+            # Update control panel
+            self.control_panel.update_object_info()
+            self.control_panel.update_material_sliders()
+            
+            # Always return to ray tracing after dragging
+            self.on_raytrace_mode()
+        
+        elif button == Qt.RightButton:
+            self.raytracer.stop_camera_rotation()
+            # Always return to ray tracing after camera rotation
+            self.on_raytrace_mode()
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard input with better debouncing"""
+        key = event.key()
+
+        self.manual_mode_change = False
+        
+        # Camera movement keys
+        if key in self.camera_keys:
+            key_name = self.camera_keys[key]
+            # Only send if key state is changing
+            if not self.raytracer.camera_controller.keys_pressed.get(key_name, False):
+                self.raytracer.set_camera_key_state(key_name, True)
+            event.accept()
+            return
+        
+        # Object movement keys
+        if key in self.object_keys:
+            dx, dy, dz = self.object_keys[key]
+            self.control_panel._move_object(dx, dy, dz)
+            event.accept()
+            return
+        
+        # Dimension locking for object dragging
+        if key == Qt.Key_X:
+            self.dimension_locks['x'] = not self.dimension_locks['x']
+            self.raytracer.set_dimension_lock('x', self.dimension_locks['x'])
+            self.control_panel.lock_x.setChecked(self.dimension_locks['x'])
+            self.update_lock_status()
+            event.accept()
+        
+        elif key == Qt.Key_Y:
+            self.dimension_locks['y'] = not self.dimension_locks['y']
+            self.raytracer.set_dimension_lock('y', self.dimension_locks['y'])
+            self.control_panel.lock_y.setChecked(self.dimension_locks['y'])
+            self.update_lock_status()
+            event.accept()
+        
+        elif key == Qt.Key_Z:
+            self.dimension_locks['z'] = not self.dimension_locks['z']
+            self.raytracer.set_dimension_lock('z', self.dimension_locks['z'])
+            self.control_panel.lock_z.setChecked(self.dimension_locks['z'])
+            self.update_lock_status()
+            event.accept()
+        
+        # Escape key to cancel operations
+        elif key == Qt.Key_Escape:
+            if self.dragging_object:
+                self.raytracer.stop_object_dragging()
+                self.dragging_object = False
+                self.dimension_locks = {'x': False, 'y': False, 'z': False}
+                self.update_lock_status()
+                self.control_panel.lock_x.setChecked(False)
+                self.control_panel.lock_y.setChecked(False)
+                self.control_panel.lock_z.setChecked(False)
+                
+                # Return to ray tracing if not manually in another mode
+                if not self.manual_mode_change:
+                    self.on_raytrace_mode()
+            elif self.raytracer.camera_controller.rotating:
+                self.raytracer.stop_camera_rotation()
+                if not self.manual_mode_change:
+                    self.on_raytrace_mode()
+            
+            event.accept()
+        
+        else:
+            super().keyPressEvent(event)
+    
+    def keyReleaseEvent(self, event):
+        """Handle key release with better state management"""
+        key = event.key()
+        
+        if key in self.camera_keys:
+            key_name = self.camera_keys[key]
+            if self.raytracer.camera_controller.keys_pressed.get(key_name, False):
+                self.raytracer.set_camera_key_state(key_name, False)
+            event.accept()
+        else:
+            super().keyReleaseEvent(event)
+    
+    # Fix: Clear key states when window loses focus
+    def focusOutEvent(self, event):
+        """Clear all key states when window loses focus"""
+        for key_name in self.camera_keys.values():
+            self.raytracer.set_camera_key_state(key_name, False)
+        self._key_states_cleared = True
+        super().focusOutEvent(event)
+    
+    def focusInEvent(self, event):
+        """Reset key states cleared flag when window gains focus"""
+        self._key_states_cleared = False
+        super().focusInEvent(event)
+    
+    def update_lock_status(self):
+        """Update lock status display"""
+        locks = []
+        for dim, locked in self.dimension_locks.items():
+            if locked:
+                locks.append(dim.upper())
+        
+        if locks:
+            self.lock_label.setText(f"Locks: {', '.join(locks)}")
+            self.lock_label.setStyleSheet("color: #ff9900; font-weight: bold;")
+        else:
+            self.lock_label.setText("Locks: None")
+            self.lock_label.setStyleSheet("color: #888;")
+    
+    def get_lock_string(self):
+        """Get string representation of active locks"""
+        locks = [dim.upper() for dim, locked in self.dimension_locks.items() if locked]
+        return ', '.join(locks) if locks else "None"
+    
+    def closeEvent(self, event):
+        """Handle application close"""
+        if self.render_thread:
+            self.render_thread.stop()
+        self.raytracer.stop_rendering()
+        event.accept()
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    
+    window = GUI()
+    window.show()
+    
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
