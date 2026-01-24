@@ -1,273 +1,333 @@
 #pragma once
-#include <vector>
+
 #include <cmath>
-#include <random>
-#include <string>
-#include <xmmintrin.h>  // SSE
-#include <pmmintrin.h>  // SSE3
+#include <cstdint>
+#include <cfloat>  // Added for FLT_MAX
+#include <immintrin.h>  // For AVX2
 
-// Optimized Vector3 with same interface
-struct Vector3 {
-    double x, y, z;
-    Vector3(double x = 0, double y = 0, double z = 0) : x(x), y(y), z(z) {}
+// ================================================
+// FAST RANDOM NUMBER GENERATOR (PCG32)
+// ================================================
+class PCG32 {
+private:
+    uint64_t state;
+    uint64_t inc;
     
-    double operator[](int i) const {
-        if (i == 0) return x;
-        if (i == 1) return y;
-        return z;
+    static constexpr uint64_t multiplier = 6364136223846793005ULL;
+    static constexpr uint64_t increment = 1442695040888963407ULL;
+    
+public:
+    __forceinline PCG32(uint64_t seed = 0) {
+        state = 0U;
+        inc = (seed << 1u) | 1u;
+        random();
+        state += 0x853c49e6748fea9bULL;
+        random();
     }
     
-    double& operator[](int i) {
-        if (i == 0) return x;
-        if (i == 1) return y;
-        return z;
+    __forceinline uint32_t random() {
+        uint64_t oldstate = state;
+        state = oldstate * multiplier + inc;
+        uint32_t xorshifted = uint32_t(((oldstate >> 18u) ^ oldstate) >> 27u);
+        uint32_t rot = uint32_t(oldstate >> 59u);
+        return (xorshifted >> rot) | (xorshifted << ((-(int)rot) & 31));  // Fixed cast
     }
     
-    // OPTIMIZED: Inline operators for speed
-    Vector3 operator+(const Vector3& other) const { 
-        return Vector3(x + other.x, y + other.y, z + other.z); 
+    __forceinline float random_float() {
+        uint32_t r = random();
+        return float(r) * 2.3283064365386963e-10f;  // 1.0 / 2^32
     }
     
-    Vector3 operator-(const Vector3& other) const { 
-        return Vector3(x - other.x, y - other.y, z - other.z); 
-    }
-    
-    Vector3 operator*(double scalar) const { 
-        return Vector3(x * scalar, y * scalar, z * scalar); 
-    }
-    
-    Vector3 operator*(const Vector3& other) const { 
-        return Vector3(x * other.x, y * other.y, z * other.z); 
-    }
-    
-    Vector3 operator/(double scalar) const { 
-        double inv_scalar = 1.0 / scalar;  // One division instead of three
-        return Vector3(x * inv_scalar, y * inv_scalar, z * inv_scalar); 
-    }
-    
-    Vector3 operator-() const { 
-        return Vector3(-x, -y, -z); 
-    }
-    
-    Vector3& operator+=(const Vector3& other) { 
-        x += other.x; y += other.y; z += other.z; 
-        return *this; 
-    }
-    
-    Vector3& operator*=(double scalar) { 
-        x *= scalar; y *= scalar; z *= scalar; 
-        return *this; 
-    }
-
-    // OPTIMIZED: Fast dot product
-    double dot(const Vector3& other) const { 
-        return x * other.x + y * other.y + z * other.z; 
-    }
-    
-    Vector3 cross(const Vector3& other) const { 
-        return Vector3(y * other.z - z * other.y, 
-                      z * other.x - x * other.z, 
-                      x * other.y - y * other.x);
-    }
-    
-    double length_squared() const { 
-        return x*x + y*y + z*z; 
-    }
-    
-    double length() const { 
-        return std::sqrt(length_squared()); 
-    }
-    
-    Vector3 normalize() const { 
-        double len = length(); 
-        if (len > 0) {
-            double inv_len = 1.0 / len;
-            return Vector3(x * inv_len, y * inv_len, z * inv_len);
-        }
-        return *this;
+    __forceinline float random_float(float min, float max) {
+        return min + (max - min) * random_float();
     }
 };
 
-// Add these optimized helper functions
-inline Vector3 operator*(double scalar, const Vector3& vec) {
-    return vec * scalar;
-}
+// Thread-local RNG
+#if defined(_MSC_VER)
+    #define THREAD_LOCAL __declspec(thread)
+#else
+    #define THREAD_LOCAL thread_local
+#endif
 
-inline Vector3 lerp(const Vector3& a, const Vector3& b, double t) {
-    return a * (1.0 - t) + b * t;
-}
+// ================================================
+// SIMD-FRIENDLY STRUCTURES (AVX2 alignment)
+// ================================================
+#ifdef _MSC_VER
+#define ALIGN32 __declspec(align(32))
+#define FORCEINLINE __forceinline
+#else
+#define ALIGN32 alignas(32)
+#define FORCEINLINE __attribute__((always_inline)) inline
+#endif
 
+struct ALIGN32 Vector3 {
+    float x, y, z;
+    
+    FORCEINLINE Vector3(float x = 0, float y = 0, float z = 0) : x(x), y(y), z(z) {}
+    
+    FORCEINLINE Vector3 operator+(const Vector3& v) const { return Vector3(x + v.x, y + v.y, z + v.z); }
+    FORCEINLINE Vector3 operator-(const Vector3& v) const { return Vector3(x - v.x, y - v.y, z - v.z); }
+    FORCEINLINE Vector3 operator*(float s) const { return Vector3(x * s, y * s, z * s); }
+    FORCEINLINE Vector3 operator*(const Vector3& v) const { return Vector3(x * v.x, y * v.y, z * v.z); }
+    FORCEINLINE Vector3 operator/(float s) const { float inv = 1.0f / s; return Vector3(x * inv, y * inv, z * inv); }
+    
+    FORCEINLINE Vector3& operator+=(const Vector3& v) { x += v.x; y += v.y; z += v.z; return *this; }
+    FORCEINLINE Vector3& operator-=(const Vector3& v) { x -= v.x; y -= v.y; z -= v.z; return *this; }
+    FORCEINLINE Vector3& operator*=(float s) { x *= s; y *= s; z *= s; return *this; }
+    
+    FORCEINLINE float dot(const Vector3& v) const { return x * v.x + y * v.y + z * v.z; }
+    FORCEINLINE Vector3 cross(const Vector3& v) const {
+        return Vector3(y * v.z - z * v.y,
+                      z * v.x - x * v.z,
+                      x * v.y - y * v.x);
+    }
+    
+    FORCEINLINE float length_squared() const { return x*x + y*y + z*z; }
+    FORCEINLINE float length() const { return sqrtf(length_squared()); }
+    FORCEINLINE Vector3 normalize() const { 
+        float len = length(); 
+        return len > 0.0f ? *this * (1.0f / len) : Vector3(0.0f, 0.0f, 1.0f); 
+    }
+    
+    FORCEINLINE Vector3 min(const Vector3& v) const { 
+        return Vector3(x < v.x ? x : v.x, 
+                      y < v.y ? y : v.y, 
+                      z < v.z ? z : v.z); 
+    }
+    FORCEINLINE Vector3 max(const Vector3& v) const { 
+        return Vector3(x > v.x ? x : v.x, 
+                      y > v.y ? y : v.y, 
+                      z > v.z ? z : v.z); 
+    }
+};
 
-struct Ray {
+FORCEINLINE Vector3 operator*(float s, const Vector3& v) { return v * s; }
+
+struct ALIGN32 Ray {
     Vector3 origin;
     Vector3 direction;
-    Ray(const Vector3& orig, const Vector3& dir) : origin(orig), direction(dir.normalize()) {}
-    Vector3 at(double t) const { 
-        return origin + direction * t; 
+    Vector3 inv_direction;
+    int sign[3];
+    
+    FORCEINLINE Ray(const Vector3& o, const Vector3& d) : origin(o), direction(d.normalize()) {
+        inv_direction = Vector3(1.0f / direction.x, 1.0f / direction.y, 1.0f / direction.z);
+        sign[0] = (inv_direction.x < 0);
+        sign[1] = (inv_direction.y < 0);
+        sign[2] = (inv_direction.z < 0);
+    }
+    
+    FORCEINLINE Vector3 at(float t) const { return origin + direction * t; }
+};
+
+struct ALIGN32 AABB {
+    Vector3 min;
+    Vector3 max;
+    
+    FORCEINLINE AABB() : min(FLT_MAX, FLT_MAX, FLT_MAX), max(-FLT_MAX, -FLT_MAX, -FLT_MAX) {}
+    FORCEINLINE AABB(const Vector3& min, const Vector3& max) : min(min), max(max) {}
+    
+    FORCEINLINE Vector3 center() const { return (min + max) * 0.5f; }
+    
+    FORCEINLINE bool intersect(const Ray& ray, float tmin, float tmax) const {
+        float tx1 = (min.x - ray.origin.x) * ray.inv_direction.x;
+        float tx2 = (max.x - ray.origin.x) * ray.inv_direction.x;
+        
+        tmin = (tx1 > tmin) ? tx1 : tmin;
+        tmax = (tx2 < tmax) ? tx2 : tmax;
+        if (tmax <= tmin) return false;
+        
+        float ty1 = (min.y - ray.origin.y) * ray.inv_direction.y;
+        float ty2 = (max.y - ray.origin.y) * ray.inv_direction.y;
+        
+        tmin = (ty1 > tmin) ? ty1 : tmin;
+        tmax = (ty2 < tmax) ? ty2 : tmax;
+        if (tmax <= tmin) return false;
+        
+        float tz1 = (min.z - ray.origin.z) * ray.inv_direction.z;
+        float tz2 = (max.z - ray.origin.z) * ray.inv_direction.z;
+        
+        tmin = (tz1 > tmin) ? tz1 : tmin;
+        tmax = (tz2 < tmax) ? tz2 : tmax;
+        return tmax > tmin;
+    }
+    
+    FORCEINLINE static AABB surrounding(const AABB& a, const AABB& b) {
+        return AABB(a.min.min(b.min), a.max.max(b.max));
     }
 };
 
-struct Material {
+struct ALIGN32 Material {
     Vector3 albedo;
-    double metallic;
-    double roughness;
+    float metallic;
+    float roughness;
     Vector3 emission;
-    double ior;
+    float ior;
     
-    Material() : albedo(0.8, 0.8, 0.8), metallic(0.0), roughness(0.5), 
-                emission(0,0,0), ior(1.5) {}
+    FORCEINLINE Material() : albedo(0.8f, 0.8f, 0.8f), metallic(0.0f), roughness(0.5f), 
+                           emission(0.0f, 0.0f, 0.0f), ior(1.5f) {}
 };
 
-struct HitRecord {
-    double t;
-    Vector3 point;
-    Vector3 normal;
-    Material material;
-    bool front_face;
-    int object_id;
-    
-    HitRecord() : t(0), point(0,0,0), normal(0,0,0), material(), 
-                 front_face(true), object_id(0) {}
-    
-    void set_face_normal(const Ray& ray, const Vector3& outward_normal) {
-        front_face = ray.direction.dot(outward_normal) < 0;
-        normal = front_face ? outward_normal : outward_normal * -1.0;
-    }
-};
-
-struct Sphere {
+struct ALIGN32 Sphere {
     Vector3 center;
-    double radius;
+    float radius;
     Material material;
     int object_id;
-    std::string name;
+    AABB bbox;
     
-    Sphere() : center(0,0,0), radius(1.0), material(), object_id(0), name("") {}
+    FORCEINLINE Sphere() : center(0, 0, 0), radius(1.0f), object_id(0) {
+        update_bbox();
+    }
     
-    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
-};
-
-class Camera {
-public:
-    Vector3 position;
-    Vector3 target;
-    Vector3 up;
-    double fov;
-    double aspect_ratio;
+    FORCEINLINE Sphere(const Vector3& c, float r, const Material& m, int id) 
+        : center(c), radius(r), material(m), object_id(id) {
+        update_bbox();
+    }
     
-    Camera() : position(0, 2, 3), target(0, 0, -3), up(0, 1, 0), fov(45.0), aspect_ratio(1.333) {}
+    FORCEINLINE void update_bbox() {
+        Vector3 rvec(radius, radius, radius);
+        bbox = AABB(center - rvec, center + rvec);
+    }
     
-    Ray get_ray(double u, double v) const {
-        // Convert from [0,1] to [-1,1] and account for aspect ratio
-        double ndc_x = (u - 0.5) * 2.0;
-        double ndc_y = (0.5 - v) * 2.0;  // Flip Y
+    FORCEINLINE bool intersect(const Ray& ray, float tmin, float tmax, 
+                              float& t, Vector3& normal, Material& mat, int& id) const {
+        Vector3 oc = ray.origin - center;
+        float a = ray.direction.dot(ray.direction);
+        float half_b = oc.dot(ray.direction);
+        float c = oc.dot(oc) - radius * radius;
+        float discriminant = half_b * half_b - a * c;
         
-        double tan_fov = std::tan(fov * 3.14159 / 360.0);
+        if (discriminant < 0) return false;
         
-        // Compute camera basis vectors based on target
-        Vector3 forward = (target - position).normalize();
-        Vector3 right = forward.cross(Vector3(0, 1, 0)).normalize();
-        if (right.length() < 0.001) {
-            right = Vector3(1, 0, 0);
+        float sqrtd = sqrtf(discriminant);
+        float root = (-half_b - sqrtd) / a;
+        if (root < tmin || root > tmax) {
+            root = (-half_b + sqrtd) / a;
+            if (root < tmin || root > tmax) return false;
         }
-        Vector3 up = right.cross(forward).normalize();
         
-        // Scale by aspect ratio and FOV
-        double view_x = ndc_x * aspect_ratio * tan_fov;
-        double view_y = ndc_y * tan_fov;
-        
-        // Compute ray direction
+        t = root;
+        Vector3 hit_point = ray.at(t);
+        normal = (hit_point - center) * (1.0f / radius);
+        mat = material;
+        id = object_id;
+        return true;
+    }
+};
+
+// ================================================
+// FLATTENED BVH NODE (Array-based)
+// ================================================
+struct ALIGN32 BVHNodeFlat {
+    AABB bbox;
+    union {
+        struct {
+            int left_child;  // If primitive_count == 0, this is left child index
+            int right_child; // If primitive_count == 0, this is right child index
+        };
+        struct {
+            int first_primitive; // If primitive_count > 0, start index in primitive list
+            int primitive_count; // Number of primitives in this leaf (0 for internal)
+        };
+    };
+    
+    FORCEINLINE bool is_leaf() const { return primitive_count > 0; }
+};
+
+// ================================================
+// BVH BUILDER FORWARD DECLARATION
+// ================================================
+class SceneIntersector;
+
+// ================================================
+// OPTIMIZED CAMERA
+// ================================================
+struct Camera {
+    Vector3 position;
+    Vector3 forward;
+    Vector3 right;
+    Vector3 up;
+    float fov;
+    float aspect_ratio;
+    float tan_fov;
+    
+    FORCEINLINE Camera() : position(0, 2, 3), fov(45.0f), aspect_ratio(1.333f) {
+        update_basis();
+    }
+    
+    FORCEINLINE void update_basis() {
+        Vector3 target(0, 0, -3);
+        forward = (target - position).normalize();
+        right = forward.cross(Vector3(0, 1, 0)).normalize();
+        up = right.cross(forward).normalize();
+        tan_fov = tanf(fov * 3.14159f / 360.0f);
+    }
+    
+    FORCEINLINE Ray get_ray(float u, float v) const {
+        float view_x = (u - 0.5f) * aspect_ratio * tan_fov;
+        float view_y = (0.5f - v) * tan_fov;
         Vector3 direction = forward + (right * view_x) + (up * view_y);
-        direction = direction.normalize();
-        
-        return Ray(position, direction);
+        return Ray(position, direction.normalize());
     }
     
-    void move(const Vector3& delta) {
+    FORCEINLINE void move(const Vector3& delta) {
         position = position + delta;
-    }
-    
-    void rotate(double dx, double dy) {
-        // Simple rotation around target
-        Vector3 forward = (target - position).normalize();
-        Vector3 right = forward.cross(up).normalize();
-        
-        // Rotate position around target
-        double distance = (target - position).length();
-        Vector3 offset = position - target;
-        
-        // Apply rotation (simplified)
-        position = target + offset;
+        update_basis();
     }
 };
 
-
-class BVH;
-
-struct DebugInfo {
-    bool enable_debug = false;
-    int build_count = 0;
-    int render_count = 0;
-    
-    void reset() {
-        build_count = 0;
-        render_count = 0;
+// ================================================
+// FAST MATH UTILITIES
+// ================================================
+namespace FastMath {
+    FORCEINLINE float rsqrt(float x) {
+        // Fast reciprocal sqrt (less accurate but faster)
+        float xhalf = 0.5f * x;
+        int i = *(int*)&x;
+        i = 0x5f3759df - (i >> 1);
+        x = *(float*)&i;
+        x = x * (1.5f - xhalf * x * x);
+        return x;
     }
     
-    std::string get_stats() const {
-        return "Builds: " + std::to_string(build_count) + 
-               ", Renders: " + std::to_string(render_count);
+    FORCEINLINE Vector3 reflect(const Vector3& v, const Vector3& n) {
+        return v - n * (2.0f * v.dot(n));
     }
-};
-
-class Scene {
-public:
-    std::vector<Sphere> spheres;
-    Vector3 background_color;
-    BVH* bvh;
-    bool use_bvh;
-    bool debug_mode;
     
-    Scene();  // Default constructor
-    Scene(const Scene& other);  // Copy constructor
-    Scene& operator=(const Scene& other);  // Assignment operator
-    ~Scene();
+    FORCEINLINE bool refract(const Vector3& v, const Vector3& n, float ni_over_nt, Vector3& refracted) {
+        Vector3 uv = v.normalize();
+        float dt = uv.dot(n);
+        float discriminant = 1.0f - ni_over_nt * ni_over_nt * (1 - dt * dt);
+        if (discriminant > 0) {
+            refracted = (uv - n * dt) * ni_over_nt - n * sqrtf(discriminant);
+            return true;
+        }
+        return false;
+    }
     
-    void add_sphere(const Sphere& sphere);
-    void remove_sphere(int object_id);
-    void build_bvh();
-    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
-    int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
-};
-
-class RayTracer {
-private:
-    Scene scene;
-    Camera camera;
-    std::mt19937 gen;
-    std::uniform_real_distribution<double> dis;
-    DebugInfo debug_info;
+    FORCEINLINE float schlick(float cosine, float ref_idx) {
+        float r0 = (1.0f - ref_idx) / (1.0f + ref_idx);
+        r0 = r0 * r0;
+        return r0 + (1.0f - r0) * powf(1.0f - cosine, 5.0f);
+    }
     
-    Vector3 random_in_unit_sphere();
-    Vector3 random_in_hemisphere(const Vector3& normal);
-    Vector3 reflect(const Vector3& v, const Vector3& n);
-    bool refract(const Vector3& v, const Vector3& n, double ni_over_nt, Vector3& refracted);
-    double schlick(double cosine, double ref_idx);
+    FORCEINLINE Vector3 random_in_unit_sphere(PCG32& rng) {
+        Vector3 p;
+        do {
+            p = Vector3(rng.random_float(-1.0f, 1.0f), 
+                       rng.random_float(-1.0f, 1.0f), 
+                       rng.random_float(-1.0f, 1.0f));
+        } while (p.length_squared() >= 1.0f);
+        return p;
+    }
     
-public:
-    RayTracer();
-    ~RayTracer();
-    void set_scene(const Scene& new_scene);
-    Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
-    std::vector<double> render(int width, int height, int samples_per_pixel, int max_depth);
-    
-    // New methods for interaction
-    Camera& get_camera() { return camera; }
-    Camera get_camera_copy() const { return camera; }
-    void set_camera(const Camera& cam) { camera = cam; }
-    int select_object(double x, double y, int width, int height);
-    void move_camera(const Vector3& delta);
-
-    void set_debug_mode(bool enable) { debug_info.enable_debug = enable; }
-    DebugInfo get_debug_info() const { return debug_info; }
-};
+    FORCEINLINE Vector3 random_in_hemisphere(const Vector3& normal, PCG32& rng) {
+        Vector3 in_unit_sphere = random_in_unit_sphere(rng);
+        if (in_unit_sphere.dot(normal) > 0.0f) {
+            return in_unit_sphere;
+        }
+        else {
+            return in_unit_sphere * -1.0f;
+        }
+    }
+}

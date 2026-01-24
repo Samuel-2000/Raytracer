@@ -1,77 +1,49 @@
-# ================================================
-# FILE: cpp_raytracer/setup.py (OPTIMIZED)
-# ================================================
 from setuptools import setup, Extension
 import pybind11
 import os
 import sys
 
-# Determine compiler flags based on platform and CPU
-def get_optimization_flags():
-    flags = []
-    
-    if os.name == 'nt':  # Windows
-        flags = [
-            '/O2',  # Maximum optimization
-            '/Ob2',  # Aggressive inlining
-            '/Oi',   # Enable intrinsic functions
-            '/Ot',   # Favor fast code
-            '/Oy',   # Omit frame pointers
-            '/GT',   # Support thread-local storage
-            '/GL',   # Whole program optimization
-            '/std:c++17',
-            '/openmp:llvm',
-            '/fp:fast',  # Fast floating point
-            '/arch:AVX2',  # Enable AVX2 if available
-        ]
-    else:  # Linux/Mac
-        flags = [
-            '-O3',  # Maximum optimization
-            '-march=native',  # Use CPU-specific instructions
-            '-ffast-math',  # Fast math (less precise but faster)
-            '-fopenmp',  # OpenMP support
-            '-funroll-loops',  # Unroll loops
-            '-ftree-vectorize',  # Vectorize loops
-            '-fno-trapping-math',  # Assume no floating point traps
-            '-std=c++17',
-            '-fopenmp-simd',  # OpenMP SIMD directives
-            '-mtune=native',  # Tune for native CPU
-            '-fomit-frame-pointer',  # Omit frame pointers
-        ]
-        
-        # Add CPU-specific SIMD flags
-        import platform
-        if platform.machine() in ['x86_64', 'amd64']:
-            flags.extend(['-msse4.2', '-mavx', '-mfma'])
-    
-    return flags
-
-# Check if user wants to disable optimizations
-if '--debug' in sys.argv:
-    optimization_flags = ['-O0', '-g'] if os.name != 'nt' else ['/Od', '/Zi']
-    sys.argv.remove('--debug')
-else:
-    optimization_flags = get_optimization_flags()
+# Remove problematic flags
+if os.name == 'nt':  # Windows
+    compile_args = [
+        '/O2',           # Maximum optimization
+        '/Ob2',          # Aggressive inlining
+        '/Oi',           # Enable intrinsic functions
+        '/Ot',           # Favor fast code
+        '/std:c++17',
+        '/openmp',
+        '/fp:fast',      # Fast floating point
+        '/arch:AVX2',    # Enable AVX2
+    ]
+    link_args = ['/openmp']
+else:  # Linux/Mac
+    compile_args = [
+        '-O3',          # Maximum optimization
+        '-march=native', # Use CPU-specific instructions
+        '-ffast-math',  # Fast math
+        '-fopenmp',     # OpenMP support
+        '-funroll-loops', # Unroll loops
+        '-std=c++17',
+        '-mavx2',       # AVX2 instructions
+        '-mfma',        # FMA instructions
+    ]
+    link_args = ['-fopenmp']
 
 ext_modules = [
     Extension(
-        "raytracer_cpp",  # SAME MODULE NAME
-        [
-            "binding.cpp",
-            "raytracer_core.cpp", 
-            "bvh.cpp"
-        ],
+        "raytracer_cpp",
+        sources=["raytracer_core.cpp"],
         include_dirs=[".", pybind11.get_include()],
         language='c++',
-        extra_compile_args=optimization_flags,
-        extra_link_args=['/openmp'] if os.name == 'nt' else ['-fopenmp'],
+        extra_compile_args=compile_args,
+        extra_link_args=link_args,
     ),
 ]
 
 setup(
-    name="raytracer_cpp",  # SAME PACKAGE NAME
-    version="1.0.0",
-    description="Optimized Ray Tracer with OpenMP and SIMD",
+    name="raytracer_cpp",
+    version="2.0.0",
+    description="High-Performance Ray Tracer with AVX2 and OpenMP",
     ext_modules=ext_modules,
     zip_safe=False,
 )
