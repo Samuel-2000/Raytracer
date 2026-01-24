@@ -60,7 +60,7 @@ def check_cpp_extension():
 
 def install_requirements():
     """Install Python requirements"""
-    print("📦 Installing Python requirements...")
+    print("Installing Python requirements...")
     
     if os.path.exists("requirements.txt"):
         result = subprocess.run([
