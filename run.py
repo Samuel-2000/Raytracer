@@ -8,7 +8,7 @@ import platform
 
 def build_cpp_extension():
     """Build the C++ ray tracer extension"""
-    print("🔨 Building C++ Ray Tracer Extension...")
+    print("Building C++ Ray Tracer Extension...")
     
     # Check if we're in the right directory
     cpp_dir = "cpp_raytracer"
@@ -32,7 +32,7 @@ def build_cpp_extension():
             
             # List the built files
             built_files = [f for f in os.listdir('.') if f.endswith(('.so', '.pyd', '.cpp'))]
-            print(f"📁 Built files: {', '.join(built_files)}")
+            print(f"Built files: {', '.join(built_files)}")
             
             return True
         else:

@@ -396,8 +396,9 @@ class Renderer:
             y_cam = obj_pos.dot(up)
             
             # Apply perspective projection (same as C++ get_ray but inverted)
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
+            # FIX: Added * 0.5 factor to match C++ ray generation
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
             
             # Clamp to screen bounds
             x_screen = max(0, min(width - 1, x_screen))
@@ -417,8 +418,9 @@ class Renderer:
                 
             x_screen, y_screen, z_cam = projected
             
-            # Calculate projected radius using perspective
-            sphere_radius_pixels = (sphere.radius / (z_cam * tan_fov)) * height / 2.0
+            # Calculate projected radius using perspective - FIXED
+            # The correct formula: radius_pixels = (sphere_radius / distance) * (screen_height / (2 * tan_fov))
+            sphere_radius_pixels = (sphere.radius / z_cam) * (height / (2 * tan_fov))
             radius = max(2, int(sphere_radius_pixels))
             
             if 0 <= x_screen < width and 0 <= y_screen < height:
@@ -446,7 +448,7 @@ class Renderer:
                             (0, 255, 255), 2)
         
         return self.silhouette_buffer.astype(np.float32) / 255.0
-    
+
     def render_wireframe(self, selected_object_id: int = -1) -> np.ndarray:
         """Render wireframe view for fast camera navigation"""
         self.wireframe_buffer.fill(0)
@@ -455,13 +457,13 @@ class Renderer:
         # Camera parameters
         fov = self.camera.fov * 3.14159 / 180.0
         aspect_ratio = width / height
-        tan_fov = np.tan(fov / 2.0)
+        tan_fov = math.tan(fov / 2.0)  # Changed from np.tan to math.tan for consistency
         
         forward = (self.camera.target - self.camera.position).normalize()
         right = forward.cross(Vector3(0, 1, 0)).normalize()
         up = right.cross(forward).normalize()
         
-        # Helper function with corrected Y axis
+        # Helper function with corrected projection
         def project_point(point: Vector3) -> Optional[Tuple[int, int]]:
             obj_pos = point - self.camera.position
             z_cam = obj_pos.dot(forward)
@@ -472,9 +474,9 @@ class Renderer:
             x_cam = obj_pos.dot(right)
             y_cam = obj_pos.dot(up)
             
-            # Correct projection with Y inversion
-            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) + 0.5) * width
-            y_screen = (0.5 - y_cam / (z_cam * tan_fov)) * height
+            # Correct projection - FIXED: Added * 0.5 factor
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
             
             # Clamp to screen bounds
             x_screen = max(0, min(width - 1, x_screen))
@@ -492,10 +494,10 @@ class Renderer:
             
             center_screen = project_point(sphere.center)
             if center_screen:
-                # Calculate screen radius
+                # Calculate screen radius - FIXED
                 distance = (sphere.center - self.camera.position).dot(forward)
                 if distance > 0:
-                    radius_screen = (sphere.radius / (distance * tan_fov)) * height / 2.0
+                    radius_screen = (sphere.radius / distance) * (height / (2 * tan_fov))
                     radius_screen = max(2, int(radius_screen))
                     
                     # Color
@@ -637,10 +639,11 @@ class RayTracerInteraction:
     
     def _init_camera(self):
         """Initialize camera position and orientation"""
-        self.camera.position = Vector3(0, 2, 5)
-        self.camera.target = Vector3(0, 0, -1)
+        self.camera.position = Vector3(0, 1, 5)
+        self.camera.target = Vector3(0, 1, 4)
         self.camera.up = Vector3(0, 1, 0)
         self.camera.fov = 45.0
+
 
     def reset_camera_and_rerender(self):
         with self.render_lock:

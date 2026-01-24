@@ -801,13 +801,8 @@ class ScrollableTabbedControlPanel(QWidget):
     
     def reset_camera(self):
         """Reset camera to default"""
-        self.cam_x.setValue(0.0)
-        self.cam_y.setValue(2.0)
-        self.cam_z.setValue(5.0)
-        self.target_x.setValue(0.0)
-        self.target_y.setValue(0.0)
-        self.target_z.setValue(-1.0)
-        self.fov.setValue(45.0)
+        self.raytracer.reset_camera_and_rerender()
+        self.update_camera_info()
     
     def update_camera_info(self):
         """Update camera controls from current camera"""

@@ -155,14 +155,16 @@ public:
     double fov;
     double aspect_ratio;
     
-    Camera() : position(0, 2, 3), target(0, 0, -3), up(0, 1, 0), fov(45.0), aspect_ratio(1.333) {}
+    Camera() : position(0, 1, 5), target(0, 1, 4), up(0, 1, 0), fov(45.0), aspect_ratio(16/9) {}
     
-    Ray get_ray(double u, double v) const {
+    Ray Camera::get_ray(double u, double v) const {
         // Convert from [0,1] to [-1,1] and account for aspect ratio
         double ndc_x = (u - 0.5) * 2.0;
         double ndc_y = (0.5 - v) * 2.0;  // Flip Y
         
-        double tan_fov = std::tan(fov * 3.14159 / 360.0);
+        // FIXED: Use proper perspective projection matching OpenGL
+        // The original formula was incorrect - it was treating ndc_x/ndc_y
+        // as already scaled by tan(fov/2), but they should be scaled here
         
         // Compute camera basis vectors based on target
         Vector3 forward = (target - position).normalize();
@@ -172,17 +174,22 @@ public:
         }
         Vector3 up = right.cross(forward).normalize();
         
-        // Scale by aspect ratio and FOV
-        double view_x = ndc_x * aspect_ratio * tan_fov;
-        double view_y = ndc_y * tan_fov;
+        // FIX: Calculate the viewport dimensions based on FOV
+        // For perspective projection, we need to scale by tan(fov/2)
+        double fov_rad = fov * 0.00872664925997222; // 3.14159265359 / 360.0;  // Convert to radians
+        double viewport_height = std::tan(fov_rad);
+        double viewport_width = viewport_height * aspect_ratio;
         
-        // Compute ray direction
-        Vector3 direction = forward + (right * view_x) + (up * view_y);
+        // FIX: Apply the viewport scaling to ndc coordinates
+        Vector3 direction = forward + 
+                        (right * (ndc_x * viewport_width)) + 
+                        (up * (ndc_y * viewport_height));
+        
         direction = direction.normalize();
         
         return Ray(position, direction);
     }
-    
+        
     void move(const Vector3& delta) {
         position = position + delta;
     }
