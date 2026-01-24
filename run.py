@@ -13,7 +13,7 @@ def build_cpp_extension():
     # Check if we're in the right directory
     cpp_dir = "cpp_raytracer"
     if not os.path.exists(cpp_dir):
-        print(f"❌ Error: {cpp_dir} directory not found!")
+        print(f"Error: {cpp_dir} directory not found!")
         print("Please run this script from the project root directory")
         return False
     
@@ -28,7 +28,7 @@ def build_cpp_extension():
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
-            print("✅ C++ extension built successfully!")
+            print("C++ extension built successfully!")
             
             # List the built files
             built_files = [f for f in os.listdir('.') if f.endswith(('.so', '.pyd', '.cpp'))]
@@ -36,13 +36,13 @@ def build_cpp_extension():
             
             return True
         else:
-            print("❌ Build failed!")
+            print("Build failed!")
             print("STDOUT:", result.stdout)
             print("STDERR:", result.stderr)
             return False
             
     except Exception as e:
-        print(f"❌ Build error: {e}")
+        print(f"Build error: {e}")
         return False
     finally:
         # Return to original directory
@@ -52,10 +52,10 @@ def check_cpp_extension():
     """Check if C++ extension is available"""
     try:
         from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3
-        print("✅ C++ extension is available")
+        print("C++ extension is available")
         return True
     except ImportError as e:
-        print(f"❌ C++ extension not available: {e}")
+        print(f"C++ extension not available: {e}")
         return False
 
 def install_requirements():
@@ -68,14 +68,14 @@ def install_requirements():
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
-            print("✅ Requirements installed successfully!")
+            print("Requirements installed successfully!")
             return True
         else:
-            print("❌ Failed to install requirements!")
+            print("Failed to install requirements!")
             print("STDERR:", result.stderr)
             return False
     else:
-        print("❌ requirements.txt not found!")
+        print("requirements.txt not found!")
         return False
 
 def main():
