@@ -159,6 +159,36 @@ RayTracer::RayTracer() : gen(std::random_device{}()), dis(0.0, 1.0) {
 
 RayTracer::~RayTracer() {}
 
+Vector3 RayTracer::sample_albedo(const HitRecord& rec) const {
+    if (rec.material.albedo_texture) {
+        // Convert hit point to texture coordinates for sphere
+        Vector3 p = rec.point - rec.sphere_center;
+        double phi = atan2(p.z, p.x);
+        double theta = asin(p.y / rec.material.radius);
+        
+        double u = 0.5 + phi / (2 * M_PI);
+        double v = 0.5 + theta / M_PI;
+        
+        return rec.material.albedo_texture->value(u, v, rec.point);
+    }
+    return rec.material.albedo;
+}
+
+float RayTracer::sample_roughness(const HitRecord& rec) const {
+    if (rec.material.roughness_texture) {
+        Vector3 p = rec.point - rec.sphere_center;
+        double phi = atan2(p.z, p.x);
+        double theta = asin(p.y / rec.material.radius);
+        
+        double u = 0.5 + phi / (2 * M_PI);
+        double v = 0.5 + theta / M_PI;
+        
+        return rec.material.roughness_texture->roughness_value(u, v, rec.point);
+    }
+    return rec.material.roughness;
+}
+
+
 void RayTracer::set_scene(const Scene& new_scene) {
     scene = new_scene;
     if (scene.use_bvh) {
@@ -217,26 +247,33 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     if (scene.hit(ray, 0.001, 1e10, rec)) {
         Vector3 emitted = rec.material.emission;
         
-        // Russian Roulette with early exit
+        // Sample textures
+        Vector3 albedo = sample_albedo(rec);
+        float roughness = sample_roughness(rec);
+        
+        // Russian Roulette
         double continue_probability = 0.8;
         if (depth < 3 || thread_local_dis(thread_local_gen) < continue_probability) {
             if (thread_local_dis(thread_local_gen) < rec.material.metallic) {
-                // Metallic reflection
                 Vector3 reflected = reflect(ray.direction.normalize(), rec.normal);
-                Vector3 random_scatter = random_in_unit_sphere() * rec.material.roughness;
+                Vector3 random_scatter = random_in_unit_sphere() * roughness;
                 Ray scattered(rec.point, reflected + random_scatter);
                 Vector3 traced_color = trace_ray(scattered, depth - 1, max_depth);
-                return emitted + (traced_color * rec.material.albedo);
+                return emitted + (traced_color * albedo);
             }
             else {
-                // Diffuse reflection
                 Vector3 target = rec.point + rec.normal + random_in_hemisphere(rec.normal);
                 Ray scattered(rec.point, target - rec.point);
                 Vector3 traced_color = trace_ray(scattered, depth - 1, max_depth);
-                return emitted + (traced_color * rec.material.albedo);
+                return emitted + (traced_color * albedo);
             }
         }
         return emitted;
+    }
+    
+    // Use skybox if available
+    if (scene.skybox) {
+        return scene.skybox->get_color(ray.direction);
     }
     
     return scene.background_color;
