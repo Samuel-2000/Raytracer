@@ -110,6 +110,9 @@ public:
     void build_bvh();
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
+
+    void set_skybox(Skybox* new_skybox);
+    Skybox* get_skybox() const;
 };
 
 class RayTracer {

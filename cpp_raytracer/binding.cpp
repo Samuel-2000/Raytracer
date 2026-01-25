@@ -158,7 +158,10 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("remove_sphere", &Scene::remove_sphere)
         .def("build_bvh", &Scene::build_bvh)
         .def("hit", &Scene::hit)
-        .def("cast_ray_for_selection", &Scene::cast_ray_for_selection);
+        .def("cast_ray_for_selection", &Scene::cast_ray_for_selection)
+        .def("set_skybox", &Scene::set_skybox, py::arg("skybox"), 
+             py::keep_alive<1, 2>())  // Keep Skybox alive while Scene exists
+        .def("get_skybox", &Scene::get_skybox, py::return_value_policy::reference);
 
     // RayTracer
     py::class_<RayTracer>(m, "RayTracer")

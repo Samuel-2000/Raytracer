@@ -118,6 +118,18 @@ Scene& Scene::operator=(const Scene& other) {
     return *this;
 }
 
+void Scene::set_skybox(Skybox* new_skybox) {
+    // Delete old skybox if exists
+    if (skybox != nullptr && skybox != new_skybox) {
+        delete skybox;
+    }
+    skybox = new_skybox;
+}
+
+Skybox* Scene::get_skybox() const {
+    return skybox;
+}
+
 void Scene::add_sphere(const Sphere& sphere) {
     spheres.push_back(sphere);
 }
