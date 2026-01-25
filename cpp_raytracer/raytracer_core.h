@@ -1,57 +1,29 @@
-// raytracer_core.h
+// raytracer_core.h - UPDATED TO INCLUDE material.h
 #pragma once
 #include <vector>
 #include <cmath>
 #include <random>
 #include <string>
 #include <memory>
-#include "vector3.h"  // Include our Vector3 header
+#include "vector3.h"
+#include "material.h"  // ADD THIS LINE
 
 // Forward declarations
 class Texture;
 class Skybox;
-
-// Material types
-enum MaterialType {
-    MATERIAL_CUSTOM = 0,
-    MATERIAL_DIFFUSE = 1,
-    MATERIAL_METAL = 2,
-    MATERIAL_DIELECTRIC = 3,
-    MATERIAL_PLASTIC = 4,
-    MATERIAL_WOOD = 5,
-    MATERIAL_MARBLE = 6,
-    MATERIAL_RUSTY_METAL = 7,
-    MATERIAL_GLASS = 8,
-    MATERIAL_MIRROR = 9,
-    MATERIAL_RUBBER = 10
-};
+class BVH;
 
 struct Ray {
     Vector3 origin;
     Vector3 direction;
+    
+    Ray() : origin(0,0,0), direction(0,0,0) {}
     Ray(const Vector3& orig, const Vector3& dir) : origin(orig), direction(dir.normalize()) {}
+    
     Vector3 at(double t) const { 
         return origin + direction * t; 
     }
 };
-
-struct Material {
-    Vector3 albedo;
-    double metallic;
-    double roughness;
-    Vector3 emission;
-    double ior;
-    
-    // Texture support
-    std::shared_ptr<Texture> albedo_texture;
-    std::shared_ptr<Texture> roughness_texture;
-    
-    MaterialType material_type;
-    
-    Material() : albedo(0.8, 0.8, 0.8), metallic(0.0), roughness(0.5), 
-                emission(0,0,0), ior(1.5), material_type(MATERIAL_CUSTOM) {}
-};
-
 
 struct HitRecord {
     double t;
@@ -81,20 +53,11 @@ struct HitRecord {
 struct Sphere {
     Vector3 center;
     double radius;
-    Vector3 albedo;
-    double metallic;
-    double roughness;
-    Vector3 emission;
-    double ior;
-    std::shared_ptr<Texture> albedo_texture;
-    std::shared_ptr<Texture> roughness_texture;
-    MaterialType material_type;
+    Material material;  // CHANGED FROM INDIVIDUAL FIELDS TO Material STRUCT
     int object_id;
     std::string name;
     
-    Sphere() : center(0,0,0), radius(1.0), albedo(0.8,0.8,0.8), 
-               metallic(0.0), roughness(0.5), emission(0,0,0), ior(1.5),
-               material_type(MATERIAL_CUSTOM), object_id(0), name("") {}
+    Sphere() : center(0,0,0), radius(1.0), material(), object_id(0), name("") {}
     
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
 };
@@ -109,33 +72,7 @@ public:
     
     Camera() : position(0, 1, 5), target(0, 1, 4), up(0, 1, 0), fov(45.0), aspect_ratio(16.0/9.0) {}
     
-    Ray get_ray(double u, double v) const {
-        // Convert from [0,1] to [-1,1] and account for aspect ratio
-        double ndc_x = (u - 0.5) * 2.0;
-        double ndc_y = (0.5 - v) * 2.0;  // Flip Y
-        
-        // Compute camera basis vectors
-        Vector3 forward = (target - position).normalize();
-        Vector3 right = forward.cross(Vector3(0, 1, 0)).normalize();
-        if (right.length() < 0.001) {
-            right = Vector3(1, 0, 0);
-        }
-        Vector3 up = right.cross(forward).normalize();
-        
-        // Calculate viewport dimensions
-        double fov_rad = fov * 0.0174533;  // Convert to radians (3.14159/180.0)
-        double viewport_height = std::tan(fov_rad / 2.0);
-        double viewport_width = viewport_height * aspect_ratio;
-        
-        // Calculate ray direction
-        Vector3 direction = forward + 
-                           (right * (ndc_x * viewport_width)) + 
-                           (up * (ndc_y * viewport_height));
-        
-        direction = direction.normalize();
-        
-        return Ray(position, direction);
-    }
+    Ray get_ray(double u, double v) const;
         
     void move(const Vector3& delta) {
         position = position + delta;
@@ -154,21 +91,18 @@ public:
     }
 };
 
-class BVH;
-class Skybox;
-
 class Scene {
 public:
     std::vector<Sphere> spheres;
-    std::shared_ptr<Skybox> skybox;  // Changed to shared_ptr
+    std::shared_ptr<Skybox> skybox;
     Vector3 background_color;
     bool use_bvh;
     bool debug_mode;
     BVH* bvh;
     
-    Scene();  // Default constructor
-    Scene(const Scene& other);  // Copy constructor
-    Scene& operator=(const Scene& other);  // Assignment operator
+    Scene();
+    Scene(const Scene& other);
+    Scene& operator=(const Scene& other);
     ~Scene();
     
     void add_sphere(const Sphere& sphere);

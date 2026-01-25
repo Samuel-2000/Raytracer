@@ -1,9 +1,10 @@
-// binding.cpp
+// binding.cpp - UPDATED TO INCLUDE material.h
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "raytracer_core.h"
 #include "textures.h"
 #include "vector3.h"
+#include "material.h"  // ADD THIS LINE
 
 namespace py = pybind11;
 
@@ -90,7 +91,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("load_image", &Skybox::load_image)
         .def("get_color", &Skybox::get_color);
     
-    // Material class
+    // Material class - NOW DEFINED IN material.h
     py::class_<Material>(m, "Material")
         .def(py::init<>())
         .def_readwrite("albedo", &Material::albedo)
@@ -109,19 +110,12 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("direction", &Ray::direction)
         .def("at", &Ray::at);
     
-    // Sphere - UPDATED to match raytracer_core.h
+    // Sphere - UPDATED TO USE Material STRUCT
     py::class_<Sphere>(m, "Sphere")
         .def(py::init<>())
         .def_readwrite("center", &Sphere::center)
         .def_readwrite("radius", &Sphere::radius)
-        .def_readwrite("albedo", &Sphere::albedo)
-        .def_readwrite("metallic", &Sphere::metallic)
-        .def_readwrite("roughness", &Sphere::roughness)
-        .def_readwrite("emission", &Sphere::emission)
-        .def_readwrite("ior", &Sphere::ior)
-        .def_readwrite("albedo_texture", &Sphere::albedo_texture)
-        .def_readwrite("roughness_texture", &Sphere::roughness_texture)
-        .def_readwrite("material_type", &Sphere::material_type)
+        .def_readwrite("material", &Sphere::material)  // SINGLE MATERIAL FIELD
         .def_readwrite("object_id", &Sphere::object_id)
         .def_readwrite("name", &Sphere::name)
         .def("hit", &Sphere::hit);
@@ -153,7 +147,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("set_skybox", &Scene::set_skybox)
         .def("get_skybox", &Scene::get_skybox, py::return_value_policy::reference);
     
-    // RayTracer - REMOVED missing methods
+    // RayTracer
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
         .def("set_scene", &RayTracer::set_scene)

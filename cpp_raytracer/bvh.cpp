@@ -1,8 +1,14 @@
 // bvh.cpp
+#define _USE_MATH_DEFINES
 #include "bvh.h"
+#include "raytracer_core.h"
 #include <algorithm>
 #include <iostream>
 #include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 bool AABB::hit(const Ray& ray, double tmin, double tmax) const {
     for (int a = 0; a < 3; a++) {
@@ -47,37 +53,8 @@ BVHNode::~BVHNode() {
     delete right;
 }
 
-bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const {
-    Vector3 oc = ray.origin - center;
-    double a = ray.direction.dot(ray.direction);
-    double half_b = oc.dot(ray.direction);
-    double c = oc.dot(oc) - radius * radius;
-    double discriminant = half_b * half_b - a * c;
-
-    if (discriminant < 0) {
-        return false;
-    }
-    
-    double sqrtd = std::sqrt(discriminant);
-    
-    double root = (-half_b - sqrtd) / a;
-    if (root < t_min || root > t_max) {
-        root = (-half_b + sqrtd) / a;
-        if (root < t_min || root > t_max) {
-            return false;
-        }
-    }
-
-    rec.t = root;
-    rec.point = ray.at(rec.t);
-    Vector3 outward_normal = (rec.point - center) * (1.0 / radius);
-    rec.set_face_normal(ray, outward_normal);
-    rec.object_id = object_id;
-    return true;
-}
-
-bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec, 
-                 const std::vector<Sphere>& scene_spheres) const {
+bool BVHNode::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
+            const std::vector<Sphere>& scene_spheres) const {
     if (!box.hit(ray, t_min, t_max)) {
         return false;
     }
@@ -145,7 +122,7 @@ BVHNode* BVH::build_tree(const std::vector<Sphere>& scene_spheres,
     
     if (span <= 4) {
         for (size_t i = start; i < end; i++) {
-            node->sphere_indices.push_back(indices[i]);
+            node->sphere_indices.push_back(static_cast<int>(indices[i]));
         }
         
         if (!node->sphere_indices.empty()) {
@@ -207,7 +184,7 @@ void BVH::build(const std::vector<Sphere>& scene_spheres, bool debug_mode) {
     
     std::vector<int> indices(scene_spheres.size());
     for (size_t i = 0; i < scene_spheres.size(); i++) {
-        indices[i] = i;
+        indices[i] = static_cast<int>(i);
     }
     
     root = build_tree(scene_spheres, indices, 0, indices.size(), 0, debug_mode);

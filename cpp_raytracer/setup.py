@@ -39,7 +39,7 @@ ext_modules = [
             "binding.cpp",
             "raytracer_core.cpp", 
             "bvh.cpp",
-            "textures.cpp"  # ADD THIS LINE
+            "textures.cpp"
         ],
         include_dirs=[".", pybind11.get_include()],
         language='c++',

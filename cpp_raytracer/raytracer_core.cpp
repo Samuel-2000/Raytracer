@@ -1,22 +1,49 @@
-// ================================================
-// FILE: cpp_raytracer/raytracer_core.cpp
-// ================================================
+// raytracer_core.cpp - UPDATED TO USE Material STRUCT
+#define _USE_MATH_DEFINES
 #include "raytracer_core.h"
 #include "bvh.h"
+#include "textures.h"
 #include <algorithm>
 #include <iostream>
 #include <chrono>
-#include <immintrin.h>  // For SIMD
+#include <immintrin.h>
 #include <random>
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-// Thread-local RNGs (must be declared before threadprivate)
+// Thread-local RNGs
 thread_local std::mt19937 thread_local_gen;
 thread_local std::uniform_real_distribution<double> thread_local_dis(0.0, 1.0);
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+Ray Camera::get_ray(double u, double v) const {
+    double ndc_x = (u - 0.5) * 2.0;
+    double ndc_y = (0.5 - v) * 2.0;
+    
+    Vector3 forward = (target - position).normalize();
+    Vector3 right = forward.cross(Vector3(0, 1, 0)).normalize();
+    if (right.length() < 0.001) {
+        right = Vector3(1, 0, 0);
+    }
+    Vector3 up = right.cross(forward).normalize();
+    
+    double fov_rad = fov * (M_PI / 180.0);
+    double viewport_height = std::tan(fov_rad / 2.0);
+    double viewport_width = viewport_height * aspect_ratio;
+    
+    Vector3 direction = forward + 
+                       (right * (ndc_x * viewport_width)) + 
+                       (up * (ndc_y * viewport_height));
+    
+    direction = direction.normalize();
+    
+    return Ray(position, direction);
+}
 
 bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const {
     Vector3 oc = ray.origin - center;
@@ -44,14 +71,14 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
     Vector3 outward_normal = (rec.point - center) * (1.0 / radius);
     rec.set_face_normal(ray, outward_normal);
     
-    // Set material properties from Sphere to HitRecord
-    rec.albedo = albedo;
-    rec.metallic = metallic;
-    rec.roughness = roughness;
-    rec.emission = emission;
-    rec.ior = ior;
-    rec.material_albedo_texture = albedo_texture;
-    rec.material_roughness_texture = roughness_texture;
+    // Copy material properties from sphere to hit record
+    rec.albedo = material.albedo;
+    rec.metallic = material.metallic;
+    rec.roughness = material.roughness;
+    rec.emission = material.emission;
+    rec.ior = material.ior;
+    rec.material_albedo_texture = material.albedo_texture;
+    rec.material_roughness_texture = material.roughness_texture;
     rec.sphere_center = center;
     rec.object_id = object_id;
     
@@ -65,9 +92,7 @@ Scene::Scene(const Scene& other)
       background_color(other.background_color),
       bvh(nullptr),
       use_bvh(other.use_bvh),
-      debug_mode(other.debug_mode) {
-    // Don't copy BVH - will rebuild if needed
-}
+      debug_mode(other.debug_mode) {}
 
 Scene::~Scene() {
     delete bvh;
@@ -78,17 +103,14 @@ Scene& Scene::operator=(const Scene& other) {
         return *this;
     }
 
-    // Clean up existing BVH
     delete bvh;
     bvh = nullptr;
 
-    // Copy data
     spheres = other.spheres;
     background_color = other.background_color;
     use_bvh = other.use_bvh;
     debug_mode = other.debug_mode;
 
-    // BVH is NOT copied — rebuild if needed
     if (use_bvh) {
         build_bvh();
     }
@@ -101,11 +123,9 @@ void Scene::add_sphere(const Sphere& sphere) {
 }
 
 void Scene::remove_sphere(int object_id) {
-    auto it = std::remove_if(spheres.begin(), spheres.end(),
-                             [object_id](const Sphere& s) { return s.object_id == object_id; });
-    if (it != spheres.end()) {
-        spheres.erase(it, spheres.end());
-    }
+    spheres.erase(std::remove_if(spheres.begin(), spheres.end(),
+        [object_id](const Sphere& s) { return s.object_id == object_id; }),
+        spheres.end());
 }
 
 void Scene::build_bvh() {
@@ -121,7 +141,6 @@ bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) cons
         return bvh->hit(ray, t_min, t_max, rec, spheres);
     }
     
-    // Fallback brute force (optimized)
     HitRecord temp_rec;
     bool hit_anything = false;
     double closest_so_far = t_max;
@@ -153,7 +172,6 @@ int Scene::cast_ray_for_selection(const Ray& ray, double t_min, double t_max) co
 }
 
 RayTracer::RayTracer() : gen(std::random_device{}()), dis(0.0, 1.0) {
-    // Initialize thread-local RNGs
     #ifdef _OPENMP
     #pragma omp parallel
     {
@@ -167,34 +185,32 @@ RayTracer::RayTracer() : gen(std::random_device{}()), dis(0.0, 1.0) {
 RayTracer::~RayTracer() {}
 
 Vector3 RayTracer::sample_albedo(const HitRecord& rec) const {
-    if (rec.material.albedo_texture) {
-        // Convert hit point to texture coordinates for sphere
+    if (rec.material_albedo_texture) {
         Vector3 p = rec.point - rec.sphere_center;
         double phi = atan2(p.z, p.x);
-        double theta = asin(p.y / rec.material.radius);
+        double theta = asin(p.y / rec.sphere_center.length());
         
         double u = 0.5 + phi / (2 * M_PI);
         double v = 0.5 + theta / M_PI;
         
-        return rec.material.albedo_texture->value(u, v, rec.point);
+        return rec.material_albedo_texture->value(u, v, rec.point);
     }
-    return rec.material.albedo;
+    return rec.albedo;
 }
 
 float RayTracer::sample_roughness(const HitRecord& rec) const {
-    if (rec.material.roughness_texture) {
+    if (rec.material_roughness_texture) {
         Vector3 p = rec.point - rec.sphere_center;
         double phi = atan2(p.z, p.x);
-        double theta = asin(p.y / rec.material.radius);
+        double theta = asin(p.y / rec.sphere_center.length());
         
         double u = 0.5 + phi / (2 * M_PI);
         double v = 0.5 + theta / M_PI;
         
-        return rec.material.roughness_texture->roughness_value(u, v, rec.point);
+        return rec.material_roughness_texture->roughness_value(u, v, rec.point);
     }
-    return rec.material.roughness;
+    return static_cast<float>(rec.roughness);
 }
-
 
 void RayTracer::set_scene(const Scene& new_scene) {
     scene = new_scene;
@@ -203,7 +219,6 @@ void RayTracer::set_scene(const Scene& new_scene) {
     }
 }
 
-// OPTIMIZED: SIMD-accelerated vector operations
 Vector3 RayTracer::random_in_unit_sphere() {
     Vector3 p;
     do {
@@ -252,16 +267,14 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     
     HitRecord rec;
     if (scene.hit(ray, 0.001, 1e10, rec)) {
-        Vector3 emitted = rec.material.emission;
+        Vector3 emitted = rec.emission;
         
-        // Sample textures
         Vector3 albedo = sample_albedo(rec);
         float roughness = sample_roughness(rec);
         
-        // Russian Roulette
         double continue_probability = 0.8;
         if (depth < 3 || thread_local_dis(thread_local_gen) < continue_probability) {
-            if (thread_local_dis(thread_local_gen) < rec.material.metallic) {
+            if (thread_local_dis(thread_local_gen) < rec.metallic) {
                 Vector3 reflected = reflect(ray.direction.normalize(), rec.normal);
                 Vector3 random_scatter = random_in_unit_sphere() * roughness;
                 Ray scattered(rec.point, reflected + random_scatter);
@@ -278,7 +291,6 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
         return emitted;
     }
     
-    // Use skybox if available
     if (scene.skybox) {
         return scene.skybox->get_color(ray.direction);
     }
@@ -295,28 +307,19 @@ void RayTracer::move_camera(const Vector3& delta) {
     camera.move(delta);
 }
 
-// ================================================
-// OPTIMIZED RENDER FUNCTION WITH OPENMP + SIMD
-// ================================================
 std::vector<double> RayTracer::render(int width, int height, int samples_per_pixel, int max_depth) {
     std::vector<double> image_data(width * height * 3);
     camera.aspect_ratio = static_cast<double>(width) / height;
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // Tile size for cache optimization
     const int TILE_SIZE = 32;
     
     #ifdef _OPENMP
-    // Get number of threads
-    int num_threads = omp_get_max_threads();
-    
-    // Parallel rendering with tiles
     #pragma omp parallel for schedule(dynamic, 1)
     #endif
     for (int tile_y = 0; tile_y < height; tile_y += TILE_SIZE) {
         for (int tile_x = 0; tile_x < width; tile_x += TILE_SIZE) {
-            // Process tile
             int tile_end_y = std::min(tile_y + TILE_SIZE, height);
             int tile_end_x = std::min(tile_x + TILE_SIZE, width);
             
@@ -337,7 +340,6 @@ std::vector<double> RayTracer::render(int width, int height, int samples_per_pix
                     
                     pixel_color = pixel_color * (1.0 / double(samples_per_pixel));
                     
-                    // Fast gamma correction using sqrt
                     pixel_color = Vector3(
                         std::sqrt(pixel_color.x),
                         std::sqrt(pixel_color.y),
