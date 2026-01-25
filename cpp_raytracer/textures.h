@@ -1,9 +1,10 @@
+// textures.h
 #pragma once
-#include "raytracer_core.h"
+#include "vector3.h"
 #include <memory>
 #include <string>
 
-// ==================== Texture Base Class ====================
+// Texture Base Class
 class Texture {
 public:
     virtual ~Texture() = default;
@@ -11,7 +12,7 @@ public:
     virtual float roughness_value(double u, double v, const Vector3& p) const { return 0.5f; }
 };
 
-// ==================== Solid Color Texture ====================
+// Solid Color Texture
 class SolidTexture : public Texture {
 private:
     Vector3 color;
@@ -23,7 +24,7 @@ public:
     }
 };
 
-// ==================== Noise Texture ====================
+// Noise Texture
 class NoiseTexture : public Texture {
 private:
     float scale;
@@ -33,7 +34,7 @@ public:
     virtual Vector3 value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Checker Texture ====================
+// Checker Texture
 class CheckerTexture : public Texture {
 private:
     Vector3 color1, color2;
@@ -44,7 +45,7 @@ public:
     virtual Vector3 value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Image Texture ====================
+// Image Texture
 class ImageTexture : public Texture {
 private:
     unsigned char* data;
@@ -59,7 +60,7 @@ public:
     virtual Vector3 value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Wood Texture ====================
+// Wood Texture
 class WoodTexture : public Texture {
 private:
     float scale;
@@ -70,7 +71,7 @@ public:
     virtual Vector3 value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Marble Texture ====================
+// Marble Texture
 class MarbleTexture : public Texture {
 private:
     float scale;
@@ -81,7 +82,7 @@ public:
     virtual Vector3 value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Metal Texture ====================
+// Metal Texture
 class MetalTexture : public Texture {
 private:
     float roughness_variation;
@@ -92,7 +93,7 @@ public:
     virtual float roughness_value(double u, double v, const Vector3& p) const override;
 };
 
-// ==================== Skybox Types ====================
+// Skybox Types
 enum class SkyboxType {
     SOLID = 0,
     GRADIENT = 1,
@@ -101,7 +102,7 @@ enum class SkyboxType {
     IMAGE = 4
 };
 
-// ==================== Skybox ====================
+// Skybox
 class Skybox {
 private:
     SkyboxType type;

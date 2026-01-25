@@ -1,8 +1,12 @@
-// bvh.h - UPDATED
+// bvh.h
 #pragma once
-#include "raytracer_core.h"
-#include <algorithm>
+#include "vector3.h"
 #include <vector>
+
+// Forward declarations
+struct Ray;
+struct Sphere;
+struct HitRecord;
 
 class AABB {
 public:
@@ -12,7 +16,6 @@ public:
     AABB() : min(Vector3(0,0,0)), max(Vector3(0,0,0)) {}
     AABB(const Vector3& a, const Vector3& b) : min(a), max(b) {}
     
-    // ADD THIS METHOD:
     Vector3 center() const {
         return (min + max) * 0.5;
     }
@@ -28,7 +31,7 @@ public:
     AABB box;
     BVHNode* left;
     BVHNode* right;
-    std::vector<int> sphere_indices;  // Store indices into scene's sphere array
+    std::vector<int> sphere_indices;
     bool is_leaf;
     
     BVHNode();

@@ -2,7 +2,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "raytracer_core.h"
-#include "textures.h"  // ADD THIS LINE
+#include "textures.h"
+#include "vector3.h
 
 namespace py = pybind11;
 
