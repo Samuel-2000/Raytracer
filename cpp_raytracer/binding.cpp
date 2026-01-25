@@ -3,7 +3,7 @@
 #include <pybind11/stl.h>
 #include "raytracer_core.h"
 #include "textures.h"
-#include "vector3.h
+#include "vector3.h"
 
 namespace py = pybind11;
 
@@ -90,13 +90,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("load_image", &Skybox::load_image)
         .def("get_color", &Skybox::get_color);
     
-    // Rest of existing bindings...
-    py::class_<Ray>(m, "Ray")
-        .def(py::init<const Vector3&, const Vector3&>())
-        .def_readwrite("origin", &Ray::origin)
-        .def_readwrite("direction", &Ray::direction)
-        .def("at", &Ray::at);
-    
+    // Material class
     py::class_<Material>(m, "Material")
         .def(py::init<>())
         .def_readwrite("albedo", &Material::albedo)
@@ -108,15 +102,31 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("roughness_texture", &Material::roughness_texture)
         .def_readwrite("material_type", &Material::material_type);
     
+    // Ray
+    py::class_<Ray>(m, "Ray")
+        .def(py::init<const Vector3&, const Vector3&>())
+        .def_readwrite("origin", &Ray::origin)
+        .def_readwrite("direction", &Ray::direction)
+        .def("at", &Ray::at);
+    
+    // Sphere - UPDATED to match raytracer_core.h
     py::class_<Sphere>(m, "Sphere")
         .def(py::init<>())
         .def_readwrite("center", &Sphere::center)
         .def_readwrite("radius", &Sphere::radius)
-        .def_readwrite("material", &Sphere::material)
+        .def_readwrite("albedo", &Sphere::albedo)
+        .def_readwrite("metallic", &Sphere::metallic)
+        .def_readwrite("roughness", &Sphere::roughness)
+        .def_readwrite("emission", &Sphere::emission)
+        .def_readwrite("ior", &Sphere::ior)
+        .def_readwrite("albedo_texture", &Sphere::albedo_texture)
+        .def_readwrite("roughness_texture", &Sphere::roughness_texture)
+        .def_readwrite("material_type", &Sphere::material_type)
         .def_readwrite("object_id", &Sphere::object_id)
         .def_readwrite("name", &Sphere::name)
         .def("hit", &Sphere::hit);
     
+    // Camera
     py::class_<Camera>(m, "Camera")
         .def(py::init<>())
         .def_readwrite("position", &Camera::position)
@@ -128,13 +138,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("move", &Camera::move)
         .def("rotate", &Camera::rotate);
     
-    py::class_<DebugInfo>(m, "DebugInfo")
-        .def_readwrite("enable_debug", &DebugInfo::enable_debug)
-        .def_readwrite("build_count", &DebugInfo::build_count)
-        .def_readwrite("render_count", &DebugInfo::render_count)
-        .def("reset", &DebugInfo::reset)
-        .def("get_stats", &DebugInfo::get_stats);
-    
+    // Scene
     py::class_<Scene>(m, "Scene")
         .def(py::init<>())
         .def_readwrite("spheres", &Scene::spheres)
@@ -149,6 +153,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("set_skybox", &Scene::set_skybox)
         .def("get_skybox", &Scene::get_skybox, py::return_value_policy::reference);
     
+    // RayTracer - REMOVED missing methods
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
         .def("set_scene", &RayTracer::set_scene)
@@ -159,7 +164,5 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("select_object", &RayTracer::select_object)
         .def("move_camera", &RayTracer::move_camera)
         .def("trace_ray", &RayTracer::trace_ray)
-        .def("set_debug_mode", &RayTracer::set_debug_mode)
-        .def("get_debug_info", &RayTracer::get_debug_info)
         .def("get_scene", &RayTracer::get_scene, py::return_value_policy::reference);
 }

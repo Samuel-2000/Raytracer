@@ -19,7 +19,6 @@ thread_local std::uniform_real_distribution<double> thread_local_dis(0.0, 1.0);
 
 
 bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const {
-    // OPTIMIZED: Fast sphere intersection using SIMD-friendly math
     Vector3 oc = ray.origin - center;
     double a = ray.direction.dot(ray.direction);
     double half_b = oc.dot(ray.direction);
@@ -30,10 +29,8 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
         return false;
     }
     
-    // Fast sqrt using reciprocal approximation
     double sqrtd = std::sqrt(discriminant);
     
-    // Check first root
     double root = (-half_b - sqrtd) / a;
     if (root < t_min || root > t_max) {
         root = (-half_b + sqrtd) / a;
@@ -46,8 +43,18 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
     rec.point = ray.at(rec.t);
     Vector3 outward_normal = (rec.point - center) * (1.0 / radius);
     rec.set_face_normal(ray, outward_normal);
-    rec.material = material;
+    
+    // Set material properties from Sphere to HitRecord
+    rec.albedo = albedo;
+    rec.metallic = metallic;
+    rec.roughness = roughness;
+    rec.emission = emission;
+    rec.ior = ior;
+    rec.material_albedo_texture = albedo_texture;
+    rec.material_roughness_texture = roughness_texture;
+    rec.sphere_center = center;
     rec.object_id = object_id;
+    
     return true;
 }
 

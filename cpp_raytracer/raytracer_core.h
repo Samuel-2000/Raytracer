@@ -203,7 +203,7 @@ public:
     void set_scene(const Scene& new_scene);
     Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
     std::vector<double> render(int width, int height, int samples_per_pixel, int max_depth);
-    
+
     Camera& get_camera() { return camera; }
     Camera get_camera_copy() const { return camera; }
     void set_camera(const Camera& cam) { camera = cam; }

@@ -1,5 +1,6 @@
 // vector3.h
 #pragma once
+#include <cmath>  // Add this line
 
 struct Vector3 {
     double x, y, z;

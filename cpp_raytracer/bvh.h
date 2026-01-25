@@ -3,10 +3,44 @@
 #include "vector3.h"
 #include <vector>
 
-// Forward declarations
+// Complete forward declarations
 struct Ray;
 struct Sphere;
 struct HitRecord;
+
+struct Ray {
+    Vector3 origin;
+    Vector3 direction;
+    Ray(const Vector3& orig, const Vector3& dir) : origin(orig), direction(dir) {}
+    Vector3 at(double t) const { 
+        return origin + direction * t; 
+    }
+};
+
+struct HitRecord {
+    double t;
+    Vector3 point;
+    Vector3 normal;
+    bool front_face;
+    int object_id;
+    
+    HitRecord() : t(0), point(0,0,0), normal(0,0,0), front_face(true), object_id(0) {}
+    
+    void set_face_normal(const Ray& ray, const Vector3& outward_normal) {
+        front_face = ray.direction.dot(outward_normal) < 0;
+        normal = front_face ? outward_normal : outward_normal * -1.0;
+    }
+};
+
+struct Sphere {
+    Vector3 center;
+    double radius;
+    int object_id;
+    
+    Sphere() : center(0,0,0), radius(1.0), object_id(0) {}
+    
+    bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
+};
 
 class AABB {
 public:
