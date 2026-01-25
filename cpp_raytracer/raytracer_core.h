@@ -110,9 +110,6 @@ public:
     void build_bvh();
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
-    
-    std::shared_ptr<Skybox> get_skybox() { return skybox; }  // Return by value, not pointer
-    void set_skybox(std::shared_ptr<Skybox> new_skybox) { skybox = new_skybox; }
 };
 
 class RayTracer {

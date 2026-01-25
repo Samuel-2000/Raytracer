@@ -299,7 +299,7 @@ class SkyboxManager:
     
     @staticmethod
     def create_default():
-        """Create default skybox - returns a shared_ptr to Skybox"""
+        """Create default skybox - returns a Skybox object"""
         skybox = Skybox()
         skybox.set_type(SkyboxType.GRADIENT)
         skybox.set_colors(
