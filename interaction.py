@@ -185,7 +185,7 @@ class MaterialPresets:
     def create_wood():
         """Create wood material"""
         material = Material()
-        material.material_type = 5  # MATERIAL_WOOD
+        material.material_type = MaterialType.WOOD  # Use enum instead of integer
         material.albedo = Vector3(0.6, 0.4, 0.2)
         material.metallic = 0.0
         material.roughness = 0.7
@@ -198,7 +198,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.8, 0.8, 0.8)
         material = Material()
-        material.material_type = 4  # MATERIAL_PLASTIC
+        material.material_type = MaterialType.PLASTIC  # Use enum instead of integer
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.3
@@ -211,7 +211,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.8, 0.8, 0.8)
         material = Material()
-        material.material_type = 2  # MATERIAL_METAL
+        material.material_type = MaterialType.METAL  # Use enum instead of integer
         material.albedo = color
         material.metallic = 1.0
         material.roughness = 0.1
@@ -222,7 +222,7 @@ class MaterialPresets:
     def create_rusty_metal():
         """Create rusty metal material"""
         material = Material()
-        material.material_type = 7  # MATERIAL_RUSTY_METAL
+        material.material_type = MaterialType.RUSTY_METAL  # Use enum instead of integer
         material.albedo = Vector3(0.7, 0.3, 0.1)
         material.metallic = 0.8
         material.roughness = 0.6
@@ -233,7 +233,7 @@ class MaterialPresets:
     def create_marble():
         """Create marble material"""
         material = Material()
-        material.material_type = 6  # MATERIAL_MARBLE
+        material.material_type = MaterialType.MARBLE  # Use enum instead of integer
         material.albedo = Vector3(0.9, 0.9, 0.85)
         material.metallic = 0.0
         material.roughness = 0.2
@@ -246,7 +246,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.95, 0.95, 0.95)
         material = Material()
-        material.material_type = 8  # MATERIAL_GLASS
+        material.material_type = MaterialType.GLASS  # Use enum instead of integer
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.0
@@ -257,7 +257,7 @@ class MaterialPresets:
     def create_mirror():
         """Create mirror material"""
         material = Material()
-        material.material_type = 9  # MATERIAL_MIRROR
+        material.material_type = MaterialType.MIRROR  # Use enum instead of integer
         material.albedo = Vector3(1.0, 1.0, 1.0)
         material.metallic = 1.0
         material.roughness = 0.0
@@ -270,7 +270,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.1, 0.1, 0.1)
         material = Material()
-        material.material_type = 10  # MATERIAL_RUBBER
+        material.material_type = MaterialType.RUBBER  # Use enum instead of integer
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.9
@@ -299,7 +299,7 @@ class SkyboxManager:
     
     @staticmethod
     def create_default():
-        """Create default skybox"""
+        """Create default skybox - returns a shared_ptr to Skybox"""
         skybox = Skybox()
         skybox.set_type(SkyboxType.GRADIENT)
         skybox.set_colors(
@@ -504,18 +504,15 @@ class SceneManager:
         """Create a scene with interactive objects"""
         scene = Scene()
         
-        # Set default skybox - FIXED: Create skybox and set it
+        # Set default skybox
         skybox = SkyboxManager.create_default()
-        
-        # FIX: Use a workaround to set skybox
-        # Create a new scene with the skybox already set
-        # We'll modify the existing scene by adding spheres directly
-        # and then set the skybox using a different approach
+        scene.set_skybox(skybox)
         
         # Ground with texture
         ground_material = Material()
         ground_material.albedo = Vector3(0.9, 0.9, 0.9)
         ground_material.roughness = 0.8
+        ground_material.material_type = MaterialType.DIFFUSE  # Add this
         
         # Add checker texture to ground if available
         if texture_manager:
@@ -546,7 +543,7 @@ class SceneManager:
             {"pos": (1.0, 0.3, -1.5), "preset": "Marble", "radius": 0.3, "name": "Marble Sphere"},
             {"pos": (0.0, 0.3, 0.0), "preset": "Rusty Metal", "radius": 0.3, "name": "Rusty Metal"},
             
-            # Lights
+            # Lights - these are not material presets but have emission
             {"pos": (0, 3, -1), "preset": "light", "emission": (10, 10, 8), "radius": 0.3, "name": "Main Light"},
             {"pos": (-2, 2, 0), "preset": "light", "emission": (5, 3, 2), "radius": 0.2, "name": "Warm Light"},
             {"pos": (2, 2, 0), "preset": "light", "emission": (2, 3, 5), "radius": 0.2, "name": "Cool Light"},
@@ -559,6 +556,7 @@ class SceneManager:
                 material.emission = Vector3(*data["emission"])
                 material.metallic = 0.0
                 material.roughness = 0.1
+                material.material_type = MaterialType.DIFFUSE  # Lights are diffuse
             else:
                 # Use appropriate preset
                 if data["preset"] == "Wood":
@@ -602,10 +600,6 @@ class SceneManager:
             scene.add_sphere(sphere)
         
         scene.build_bvh()
-        
-        # FIX: Set skybox after scene is built
-        # We need to handle this differently - we'll skip skybox for now
-        # and set it later in the RayTracerInteraction class
         return scene
 
 class RayTracerInteraction:
@@ -858,7 +852,7 @@ class RayTracerInteraction:
                 
             else:  # Custom/Diffuse
                 obj.material = Material()
-                obj.material.material_type = 1  # MATERIAL_DIFFUSE
+                obj.material.material_type = MaterialType.DIFFUSE  # Use enum
             
             # Update scene
             self.ray_tracer.set_scene(self.scene)

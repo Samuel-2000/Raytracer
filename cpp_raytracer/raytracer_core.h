@@ -111,7 +111,7 @@ public:
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
     
-    Skybox* get_skybox() { return skybox.get(); }
+    std::shared_ptr<Skybox> get_skybox() { return skybox; }  // Return by value, not pointer
     void set_skybox(std::shared_ptr<Skybox> new_skybox) { skybox = new_skybox; }
 };
 

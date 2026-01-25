@@ -1,10 +1,10 @@
-// binding.cpp - UPDATED TO INCLUDE material.h
+// binding.cpp - UPDATED TO INCLUDE MaterialType enum
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "raytracer_core.h"
 #include "textures.h"
 #include "vector3.h"
-#include "material.h"  // ADD THIS LINE
+#include "material.h"
 
 namespace py = pybind11;
 
@@ -41,6 +41,21 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("__repr__", [](const Vector3& v) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
         });
+    
+    // MaterialType enum - ADD THIS SECTION
+    py::enum_<MaterialType>(m, "MaterialType")
+        .value("CUSTOM", MATERIAL_CUSTOM)
+        .value("DIFFUSE", MATERIAL_DIFFUSE)
+        .value("METAL", MATERIAL_METAL)
+        .value("DIELECTRIC", MATERIAL_DIELECTRIC)
+        .value("PLASTIC", MATERIAL_PLASTIC)
+        .value("WOOD", MATERIAL_WOOD)
+        .value("MARBLE", MATERIAL_MARBLE)
+        .value("RUSTY_METAL", MATERIAL_RUSTY_METAL)
+        .value("GLASS", MATERIAL_GLASS)
+        .value("MIRROR", MATERIAL_MIRROR)
+        .value("RUBBER", MATERIAL_RUBBER)
+        .export_values();
     
     // Texture base class
     py::class_<Texture, std::shared_ptr<Texture>>(m, "Texture")
@@ -91,7 +106,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("load_image", &Skybox::load_image)
         .def("get_color", &Skybox::get_color);
     
-    // Material class - NOW DEFINED IN material.h
+    // Material class
     py::class_<Material>(m, "Material")
         .def(py::init<>())
         .def_readwrite("albedo", &Material::albedo)
@@ -110,12 +125,12 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("direction", &Ray::direction)
         .def("at", &Ray::at);
     
-    // Sphere - UPDATED TO USE Material STRUCT
+    // Sphere
     py::class_<Sphere>(m, "Sphere")
         .def(py::init<>())
         .def_readwrite("center", &Sphere::center)
         .def_readwrite("radius", &Sphere::radius)
-        .def_readwrite("material", &Sphere::material)  // SINGLE MATERIAL FIELD
+        .def_readwrite("material", &Sphere::material)
         .def_readwrite("object_id", &Sphere::object_id)
         .def_readwrite("name", &Sphere::name)
         .def("hit", &Sphere::hit);
@@ -145,7 +160,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection)
         .def("set_skybox", &Scene::set_skybox)
-        .def("get_skybox", &Scene::get_skybox, py::return_value_policy::reference);
+        .def("get_skybox", &Scene::get_skybox);
     
     // RayTracer
     py::class_<RayTracer>(m, "RayTracer")
