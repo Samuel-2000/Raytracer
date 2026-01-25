@@ -94,7 +94,7 @@ public:
 class Scene {
 public:
     std::vector<Sphere> spheres;
-    std::shared_ptr<Skybox> skybox;
+    Skybox* skybox;
     Vector3 background_color;
     bool use_bvh;
     bool debug_mode;
