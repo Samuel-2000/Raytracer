@@ -10,6 +10,8 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 import threading
 import time
 
+from cpp_raytracer.raytracer_cpp import Vector3
+
 class CameraRecorder:
     """Records camera positions over time"""
     
@@ -111,18 +113,30 @@ class VideoRenderer(QThread):
             
             total_frames = len(self.camera_frames)
             
+            # Store original render mode
+            original_mode = self.raytracer.render_state.current_mode
+            
             for i, camera_frame in enumerate(self.camera_frames):
                 if self.stopped:
                     break
                 
+                # Store original camera state using copy() method
+                original_position = self.raytracer.camera.position.copy()
+                original_target = self.raytracer.camera.target.copy()
+                
                 # Set camera to recorded position
-                self.raytracer.camera.position = camera_frame['position']
-                self.raytracer.camera.target = camera_frame['target']
-                self.raytracer.camera.up = camera_frame['up']
-                self.raytracer.camera.fov = camera_frame['fov']
+                self.raytracer.camera.position = camera_frame['position'].copy()
+                self.raytracer.camera.target = camera_frame['target'].copy()
+                if 'up' in camera_frame:
+                    self.raytracer.camera.up = camera_frame['up'].copy()
+                if 'fov' in camera_frame:
+                    self.raytracer.camera.fov = camera_frame['fov']
                 
                 # Update C++ camera
                 self.raytracer.ray_tracer.set_camera(self.raytracer.camera)
+                
+                # Ensure we're in raytracing mode for rendering
+                self.raytracer.render_state.set_mode(0) # RenderMode.RAYTRACING
                 
                 # Render frame
                 try:
@@ -137,7 +151,11 @@ class VideoRenderer(QThread):
                         self.settings.get('samples_per_batch', 8)
                     )
                     
-                    # Render the frame
+                    # Reset rendering for this frame
+                    self.raytracer.accumulated_image = None
+                    self.raytracer.total_samples = 0
+                    
+                    # Render directly without threading for video
                     result = self.raytracer.ray_tracer.render(
                         self.settings['width'],
                         self.settings['height'],
@@ -145,14 +163,14 @@ class VideoRenderer(QThread):
                         self.settings.get('max_depth', 4)
                     )
                     
-                    # Restore original settings
-                    self.raytracer.settings['max_samples'] = orig_max_samples
-                    self.raytracer.settings['samples_per_batch'] = orig_samples_batch
-                    
                     if result is None or len(result) == 0:
-                        raise Exception("Render returned no data")
+                        print(f"Warning: Empty render result for frame {i}")
+                        # Restore original settings
+                        self.raytracer.settings['max_samples'] = orig_max_samples
+                        self.raytracer.settings['samples_per_batch'] = orig_samples_batch
+                        continue
                     
-                    # Convert to image
+                    # Process the rendered frame
                     image_array = np.array(result, dtype=np.float32).reshape(
                         (self.settings['height'], self.settings['width'], 3)
                     )
@@ -181,14 +199,26 @@ class VideoRenderer(QThread):
                     # Emit progress
                     self.frame_rendered.emit(i + 1, total_frames)
                     
+                    # Restore original settings
+                    self.raytracer.settings['max_samples'] = orig_max_samples
+                    self.raytracer.settings['samples_per_batch'] = orig_samples_batch
+                    
                 except Exception as e:
                     print(f"Error rendering frame {i}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
                 
-                # Small delay to prevent CPU overload
-                time.sleep(0.01)
+                finally:
+                    # Always restore original camera
+                    self.raytracer.camera.position = original_position
+                    self.raytracer.camera.target = original_target
+                    self.raytracer.ray_tracer.set_camera(self.raytracer.camera)
             
             out.release()
+            
+            # Restore original render mode
+            self.raytracer.render_state.current_mode = original_mode
             
             if not self.stopped:
                 self.video_finished.emit(self.settings['output_path'])

@@ -2047,7 +2047,7 @@ class GUI(QMainWindow):
         if not hasattr(self, '_last_recorded_pos'):
             self._last_recorded_pos = current_pos
             self._last_recorded_target = current_target
-            self.raytracer.camera_recorder.record_frame()  # FIXED: Use raytracer.camera_recorder
+            self.raytracer.camera_recorder.record_frame()
             return
         
         # Calculate if camera has moved
@@ -2063,7 +2063,7 @@ class GUI(QMainWindow):
         
         # Only record if camera has actually changed
         if pos_moved or rotated:
-            self.raytracer.camera_recorder.record_frame()  # FIXED: Use raytracer.camera_recorder
+            self.raytracer.camera_recorder.record_frame()
             self._last_recorded_pos = current_pos
             self._last_recorded_target = current_target
 

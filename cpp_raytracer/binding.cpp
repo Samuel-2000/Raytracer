@@ -38,6 +38,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("length_squared", &Vector3::length_squared)
         .def("length", &Vector3::length)
         .def("normalize", &Vector3::normalize)
+        .def("copy", &Vector3::copy)
         .def("__repr__", [](const Vector3& v) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
         });

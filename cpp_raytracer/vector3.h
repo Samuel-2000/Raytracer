@@ -79,6 +79,11 @@ struct Vector3 {
         }
         return *this;
     }
+
+    Vector3 copy() const {
+        return Vector3(x, y, z);
+    }
+
 };
 
 inline Vector3 operator*(double scalar, const Vector3& vec) {
