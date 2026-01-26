@@ -14,6 +14,8 @@ from interaction import RayTracerInteraction, RenderMode
 
 from video_renderer import SegmentDialog, VideoRenderDialog
 
+import math
+
 class RenderThread(QThread):
     """Thread for handling rendering updates"""
     frame_ready = pyqtSignal(dict)
@@ -2033,16 +2035,37 @@ class GUI(QMainWindow):
             """)
 
     def update_recording(self):
-        """Update recording if in recording mode"""
-        if self.recording_mode:
-            self.raytracer.update_recording()
-            
-            # Update status with frame count
-            frames = len(self.raytracer.camera_recorder.current_segment)
-            if hasattr(self, 'status_label'):
-                current_text = self.status_label.text()
-                if "Recording:" not in current_text and self.recording_mode:
-                    self.status_label.setText(f"{current_text} | Recording: {frames} frames")
+        """Update recording ONLY when camera is actively changing"""
+        if not self.recording_mode:
+            return
+        
+        # Get current camera state
+        current_pos = self.raytracer.camera.position
+        current_target = self.raytracer.camera.target
+        
+        # Check if this is first frame
+        if not hasattr(self, '_last_recorded_pos'):
+            self._last_recorded_pos = current_pos
+            self._last_recorded_target = current_target
+            self.raytracer.camera_recorder.record_frame()  # FIXED: Use raytracer.camera_recorder
+            return
+        
+        # Calculate if camera has moved
+        pos_moved = (current_pos - self._last_recorded_pos).length() > 0.001
+        
+        # Calculate if camera has rotated
+        last_forward = (self._last_recorded_target - self._last_recorded_pos).normalize()
+        current_forward = (current_target - current_pos).normalize()
+        dot_product = last_forward.dot(current_forward)
+        dot_product = max(-1.0, min(1.0, dot_product))  # Clamp for acos
+        angle = math.acos(dot_product)
+        rotated = angle > 0.001
+        
+        # Only record if camera has actually changed
+        if pos_moved or rotated:
+            self.raytracer.camera_recorder.record_frame()  # FIXED: Use raytracer.camera_recorder
+            self._last_recorded_pos = current_pos
+            self._last_recorded_target = current_target
 
     def update_camera_controls(self):
         """Update camera control values from current camera state"""
