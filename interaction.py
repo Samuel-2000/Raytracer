@@ -845,6 +845,11 @@ class SceneManager:
         
         scene.build_bvh()
         return scene
+    
+
+
+
+
 
 class RayTracerInteraction:
     """Main class for interactive ray tracing with skybox and textures"""

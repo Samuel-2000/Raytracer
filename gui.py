@@ -2035,37 +2035,28 @@ class GUI(QMainWindow):
             """)
 
     def update_recording(self):
-        """Update recording ONLY when camera is actively changing"""
-        if not self.recording_mode:
+        """
+        Record camera frames only while user input indicates the camera is moving.
+        Assumes:
+        - self.recording_mode is a bool that indicates recording is active
+        - self.interaction_handler is an instance with attribute camera_is_moving
+        - self.raytracer.camera_recorder exists and implements record_frame()
+        """
+        if not getattr(self, "recording_mode", False):
             return
-        
-        # Get current camera state
-        current_pos = self.raytracer.camera.position
-        current_target = self.raytracer.camera.target
-        
-        # Check if this is first frame
-        if not hasattr(self, '_last_recorded_pos'):
-            self._last_recorded_pos = current_pos
-            self._last_recorded_target = current_target
-            self.raytracer.camera_recorder.record_frame()
+
+        ih = getattr(self, "interaction_handler", None)
+        if ih is None:
+            # If you don't have an interaction handler, fall back to no-op
             return
-        
-        # Calculate if camera has moved
-        pos_moved = (current_pos - self._last_recorded_pos).length() > 0.001
-        
-        # Calculate if camera has rotated
-        last_forward = (self._last_recorded_target - self._last_recorded_pos).normalize()
-        current_forward = (current_target - current_pos).normalize()
-        dot_product = last_forward.dot(current_forward)
-        dot_product = max(-1.0, min(1.0, dot_product))  # Clamp for acos
-        angle = math.acos(dot_product)
-        rotated = angle > 0.001
-        
-        # Only record if camera has actually changed
-        if pos_moved or rotated:
-            self.raytracer.camera_recorder.record_frame()
-            self._last_recorded_pos = current_pos
-            self._last_recorded_target = current_target
+
+        # Record continuously while moving; stop once movement stops.
+        if getattr(ih, "camera_is_moving", False):
+            try:
+                self.raytracer.camera_recorder.record_frame()
+            except Exception:
+                # safe-guard: don't crash the UI if recorder isn't available
+                pass
 
     def update_camera_controls(self):
         """Update camera control values from current camera state"""

@@ -40,24 +40,67 @@ class CameraRecorder:
         return False
     
     def record_frame(self):
-        """Record current camera state"""
-        if not self.recording:
+        """
+        Snapshot the current camera state (store copies, not references).
+        Uses a minimum dt between captures to avoid flooding with near-duplicate frames.
+        """
+        if not getattr(self, "recording", False):
             return
-            
-        camera = self.raytracer.camera
+
+        # Enforce minimum capture interval (to avoid capturing huge numbers of frames).
+        min_dt = getattr(self, "_min_capture_dt", 1.0 / 60.0)
+        now = time.time()
+        last = getattr(self, "_last_capture_time", 0.0)
+        if now - last < min_dt:
+            return
+        self._last_capture_time = now
+
+        # Get camera (defensive)
+        try:
+            camera = self.raytracer.camera
+        except Exception:
+            # no camera available
+            return
+
+        # Build an immutable snapshot. Use .copy() if available, otherwise create new Vector3.
+        def copy_vec(v):
+            if v is None:
+                return None
+            try:
+                return v.copy()
+            except Exception:
+                # Try to construct a new Vector3 from components if possible
+                try:
+                    return Vector3(v.x, v.y, v.z)
+                except Exception:
+                    # Last-resort: return v (not ideal but safe)
+                    return v
+
         frame = {
-            'position': camera.position,
-            'target': camera.target,
-            'up': camera.up,
-            'fov': camera.fov,
-            'timestamp': time.time()
+            "position": copy_vec(getattr(camera, "position", None)),
+            "target": copy_vec(getattr(camera, "target", None)),
+            "up": copy_vec(getattr(camera, "up", None)),
+            "fov": float(getattr(camera, "fov", 0.0)),
+            "timestamp": now,
         }
+
+        # Append to current segment
+        if not hasattr(self, "current_segment") or self.current_segment is None:
+            self.current_segment = []
         self.current_segment.append(frame)
-        
-        # Limit recording to prevent memory issues
-        if len(self.current_segment) > 1000:
-            self.segments.append(self.current_segment[-500:].copy())
-            self.current_segment = self.current_segment[-500:]
+
+        # Safety cap: avoid unlimited growth
+        MAX_SEGMENT = 2000
+        TRIM_TO = 800
+        if len(self.current_segment) > MAX_SEGMENT:
+            # create segments list if missing
+            if not hasattr(self, "segments") or self.segments is None:
+                self.segments = []
+            # keep last TRIM_TO frames and archive the rest
+            self.segments.append(self.current_segment[:-TRIM_TO])
+            self.current_segment = self.current_segment[-TRIM_TO:].copy()
+
+
     
     def clear_recording(self):
         """Clear all recorded frames"""
