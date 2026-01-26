@@ -228,7 +228,7 @@ class ScrollableTabbedControlPanel(QWidget):
         render_group.setLayout(render_layout)
         layout.addWidget(render_group)
         
-        # Viewport resolution group
+        # Viewport resolution group - FIXED
         res_group = QGroupBox("Viewport Resolution")
         res_layout = QHBoxLayout()
         self.res_w = QLineEdit(str(self.raytracer.width))
@@ -250,7 +250,7 @@ class ScrollableTabbedControlPanel(QWidget):
         return tab
     
     def create_scene_tab(self):
-        """Create scene management tab"""
+        """Create scene management tab - REMOVED TEXTURE SECTION"""
         tab = QWidget()
         layout = QVBoxLayout()
         
@@ -272,58 +272,22 @@ class ScrollableTabbedControlPanel(QWidget):
         remove_object_btn.clicked.connect(self.remove_object)
         scene_layout.addWidget(remove_object_btn)
         
+        # NEW: Toggle floor button
+        floor_group = QGroupBox("Floor")
+        floor_layout = QHBoxLayout()
+        
+        self.floor_enabled = True
+        self.toggle_floor_btn = QPushButton("Disable Floor")
+        self.toggle_floor_btn.clicked.connect(self.toggle_floor)
+        floor_layout.addWidget(self.toggle_floor_btn)
+        
+        floor_group.setLayout(floor_layout)
+        scene_layout.addWidget(floor_group)
+        
         scene_group.setLayout(scene_layout)
         layout.addWidget(scene_group)
         
-        # Texture controls group
-        texture_group = QGroupBox("Texture / Material")
-        texture_layout = QVBoxLayout()
-        
-        # Texture type selection
-        tex_row = QHBoxLayout()
-        tex_row.addWidget(QLabel("Type:"))
-        self.texture_select = QComboBox()
-        self.texture_select.addItems(["none", "noise"])
-        self.texture_select.currentTextChanged.connect(self.on_texture_type_changed)
-        tex_row.addWidget(self.texture_select)
-        texture_layout.addLayout(tex_row)
-        
-        # Texture parameters
-        param_row = QHBoxLayout()
-        param_row.addWidget(QLabel("Scale:"))
-        self.tex_scale = QDoubleSpinBox()
-        self.tex_scale.setRange(0.01, 10.0)
-        self.tex_scale.setSingleStep(0.1)
-        self.tex_scale.setValue(1.0)
-        param_row.addWidget(self.tex_scale)
-        param_row.addWidget(QLabel("Octaves:"))
-        self.tex_octaves = QSpinBox()
-        self.tex_octaves.setRange(1, 8)
-        self.tex_octaves.setValue(3)
-        param_row.addWidget(self.tex_octaves)
-        texture_layout.addLayout(param_row)
-        
-        # Tint controls
-        tint_row = QHBoxLayout()
-        tint_row.addWidget(QLabel("Tint H:"))
-        self.tint_h = QSpinBox()
-        self.tint_h.setRange(0, 360)
-        self.tint_h.setValue(0)
-        tint_row.addWidget(self.tint_h)
-        tint_row.addWidget(QLabel("S:"))
-        self.tint_s = QSpinBox()
-        self.tint_s.setRange(0, 100)
-        self.tint_s.setValue(0)
-        tint_row.addWidget(self.tint_s)
-        texture_layout.addLayout(tint_row)
-        
-        # Apply texture button
-        apply_tex_btn = QPushButton("Apply Texture to Selected")
-        apply_tex_btn.clicked.connect(self.apply_texture_to_selected)
-        texture_layout.addWidget(apply_tex_btn)
-        
-        texture_group.setLayout(texture_layout)
-        layout.addWidget(texture_group)
+        # REMOVED: Texture controls group (moved to dedicated texture tab)
         
         layout.addStretch()
         tab.setLayout(layout)
@@ -464,7 +428,7 @@ class ScrollableTabbedControlPanel(QWidget):
         return tab
     
     def create_object_tab(self):
-        """Create object controls tab"""
+        """Create object controls tab - REMOVED DIMENSION LOCKS"""
         tab = QWidget()
         layout = QVBoxLayout()
         
@@ -539,20 +503,7 @@ class ScrollableTabbedControlPanel(QWidget):
         self.btn_forward.clicked.connect(lambda: self._move_object(0, 0, -1))
         self.btn_backward.clicked.connect(lambda: self._move_object(0, 0, 1))
         
-        # Dimension locks
-        lock_group = QGroupBox("Dimension Locks (for dragging)")
-        lock_layout = QHBoxLayout()
-        self.lock_x = QCheckBox("X")
-        self.lock_y = QCheckBox("Y")
-        self.lock_z = QCheckBox("Z")
-        self.lock_x.toggled.connect(lambda s: self.raytracer.set_dimension_lock('x', s))
-        self.lock_y.toggled.connect(lambda s: self.raytracer.set_dimension_lock('y', s))
-        self.lock_z.toggled.connect(lambda s: self.raytracer.set_dimension_lock('z', s))
-        lock_layout.addWidget(self.lock_x)
-        lock_layout.addWidget(self.lock_y)
-        lock_layout.addWidget(self.lock_z)
-        lock_group.setLayout(lock_layout)
-        layout.addWidget(lock_group)
+        # REMOVED: Dimension locks group (moved to status bar)
         
         layout.addStretch()
         tab.setLayout(layout)
@@ -707,7 +658,7 @@ class ScrollableTabbedControlPanel(QWidget):
         return tab
     
     def create_texture_tab(self):
-        """Create texture controls tab"""
+        """Create texture controls tab - FIXED IMAGE TEXTURE"""
         tab = QWidget()
         layout = QVBoxLayout()
         
@@ -716,8 +667,14 @@ class ScrollableTabbedControlPanel(QWidget):
         texture_layout = QVBoxLayout()
         
         self.texture_type = QComboBox()
-        for tex_type in self.raytracer.get_available_textures():
-            self.texture_type.addItem(tex_type.title())
+        self.texture_type.addItem("None")
+        self.texture_type.addItem("Noise")
+        self.texture_type.addItem("Checker")
+        self.texture_type.addItem("Wood")
+        self.texture_type.addItem("Marble")
+        self.texture_type.addItem("Metal")
+        self.texture_type.addItem("Image")
+        
         self.texture_type.currentTextChanged.connect(self.on_texture_type_changed)
         texture_layout.addWidget(self.texture_type)
         
@@ -730,7 +687,7 @@ class ScrollableTabbedControlPanel(QWidget):
         texture_group.setLayout(texture_layout)
         layout.addWidget(texture_group)
         
-        # Load texture from file
+        # Load texture from file - FIXED
         file_group = QGroupBox("Load Texture from File")
         file_layout = QVBoxLayout()
         
@@ -742,9 +699,16 @@ class ScrollableTabbedControlPanel(QWidget):
         load_texture_btn.clicked.connect(self.load_texture_file)
         file_layout.addWidget(load_texture_btn)
         
-        apply_texture_btn = QPushButton("Apply Texture to Selected Object")
-        apply_texture_btn.clicked.connect(self.apply_texture)
-        file_layout.addWidget(apply_texture_btn)
+        # Show image texture button only when image type is selected
+        self.apply_texture_btn = QPushButton("Apply Image Texture to Selected Object")
+        self.apply_texture_btn.clicked.connect(self.apply_image_texture)
+        self.apply_texture_btn.setVisible(False)
+        file_layout.addWidget(self.apply_texture_btn)
+        
+        # Apply current texture type button
+        self.apply_current_texture_btn = QPushButton("Apply Selected Texture Type")
+        self.apply_current_texture_btn.clicked.connect(self.apply_current_texture)
+        file_layout.addWidget(self.apply_current_texture_btn)
         
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
@@ -959,6 +923,15 @@ class ScrollableTabbedControlPanel(QWidget):
         
         texture_type = texture_type.lower()
         
+        # Show/hide image texture button
+        if texture_type == "image":
+            self.apply_texture_btn.setVisible(True)
+            self.apply_current_texture_btn.setVisible(False)
+            # No parameters for image texture
+        else:
+            self.apply_texture_btn.setVisible(False)
+            self.apply_current_texture_btn.setVisible(True)
+        
         if texture_type == "noise":
             scale_layout = QHBoxLayout()
             scale_layout.addWidget(QLabel("Scale:"))
@@ -1048,73 +1021,71 @@ class ScrollableTabbedControlPanel(QWidget):
         """Load texture from file"""
         filename, _ = QFileDialog.getOpenFileName(
             self, "Select Texture Image", 
-            "textures", 
+            "", 
             "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
         )
         
         if filename:
             self.texture_file_label.setText(f"Selected: {filename.split('/')[-1]}")
             self.texture_file_path = filename
+            self.texture_type.setCurrentText("Image")
     
-    def apply_texture(self):
-        """Apply selected texture to object"""
+    def apply_image_texture(self):
+        """Apply image texture to object"""
+        if hasattr(self, 'texture_file_path') and self.texture_file_path:
+            success = self.raytracer.load_texture_from_file(self.texture_file_path)
+            if success:
+                self.texture_file_label.setText("Texture applied!")
+            else:
+                self.texture_file_label.setText("Failed to apply texture!")
+        else:
+            self.texture_file_label.setText("Please select a file first!")
+    
+    def apply_current_texture(self):
+        """Apply selected texture type to object"""
         texture_type = self.texture_type.currentText().lower()
         params = {}
         
-        if texture_type == "noise":
-            params['scale'] = self.noise_scale.value()
-            
+        if texture_type == "none":
+            self.raytracer.apply_texture_to_object("none", params)
+            return
+        
+        elif texture_type == "noise":
+            if hasattr(self, 'noise_scale'):
+                params['scale'] = self.noise_scale.value()
+                
         elif texture_type == "checker":
-            params['scale'] = self.checker_scale.value()
-            from cpp_raytracer.raytracer_cpp import Vector3
-            params['color1'] = Vector3(
-                self.checker_color1_r.value() / 100.0,
-                self.checker_color1_g.value() / 100.0,
-                self.checker_color1_b.value() / 100.0
-            )
-            params['color2'] = Vector3(
-                self.checker_color2_r.value() / 100.0,
-                self.checker_color2_g.value() / 100.0,
-                self.checker_color2_b.value() / 100.0
-            )
-            
+            if hasattr(self, 'checker_scale'):
+                params['scale'] = self.checker_scale.value()
+                from cpp_raytracer.raytracer_cpp import Vector3
+                params['color1'] = Vector3(
+                    self.checker_color1_r.value() / 100.0,
+                    self.checker_color1_g.value() / 100.0,
+                    self.checker_color1_b.value() / 100.0
+                )
+                params['color2'] = Vector3(
+                    self.checker_color2_r.value() / 100.0,
+                    self.checker_color2_g.value() / 100.0,
+                    self.checker_color2_b.value() / 100.0
+                )
+                
         elif texture_type == "wood":
-            params['scale'] = self.wood_scale.value()
-            
+            if hasattr(self, 'wood_scale'):
+                params['scale'] = self.wood_scale.value()
+                
         elif texture_type == "marble":
-            params['scale'] = self.marble_scale.value()
-            
+            if hasattr(self, 'marble_scale'):
+                params['scale'] = self.marble_scale.value()
+                
         elif texture_type == "metal":
-            params['roughness_variation'] = self.metal_roughness.value()
-            
-        elif texture_type == "image":
-            if hasattr(self, 'texture_file_path'):
-                params['filename'] = self.texture_file_path
-            else:
-                self.texture_file_label.setText("Please select a file first!")
-                return
+            if hasattr(self, 'metal_roughness'):
+                params['roughness_variation'] = self.metal_roughness.value()
         
         self.raytracer.apply_texture_to_object(texture_type, params)
     
     def apply_preset_texture(self, texture_name):
         """Apply preset texture"""
-        params = {}
-        
-        if texture_name == "wood":
-            params['scale'] = 5.0
-        elif texture_name == "marble":
-            params['scale'] = 3.0
-        elif texture_name == "metal":
-            params['roughness_variation'] = 0.1
-        elif texture_name == "checker":
-            from cpp_raytracer.raytracer_cpp import Vector3
-            params['color1'] = Vector3(0.9, 0.9, 0.9)
-            params['color2'] = Vector3(0.1, 0.1, 0.1)
-            params['scale'] = 10.0
-        elif texture_name == "noise":
-            params['scale'] = 1.0
-        
-        self.raytracer.apply_texture_to_object(texture_name, params)
+        self.raytracer.apply_texture_to_object(texture_name, {})
     
     def on_skybox_type_changed(self, skybox_type):
         """Handle skybox type change"""
@@ -1142,7 +1113,7 @@ class ScrollableTabbedControlPanel(QWidget):
         """Load skybox from image file"""
         filename, _ = QFileDialog.getOpenFileName(
             self, "Select Skybox Image", 
-            "textures", 
+            "", 
             "Image Files (*.png *.jpg *.jpeg *.bmp *.tga)"
         )
         
@@ -1162,6 +1133,18 @@ class ScrollableTabbedControlPanel(QWidget):
         """Handle material preset selection"""
         preset_name = self.material_preset.currentText()
         self.raytracer.apply_material_preset(preset_name)
+    
+    # ==================== NEW FLOOR TOGGLE ====================
+    
+    def toggle_floor(self):
+        """Toggle floor visibility"""
+        self.floor_enabled = not self.floor_enabled
+        if self.floor_enabled:
+            self.toggle_floor_btn.setText("Disable Floor")
+            self.raytracer.enable_floor()
+        else:
+            self.toggle_floor_btn.setText("Enable Floor")
+            self.raytracer.disable_floor()
     
     # ==================== EXISTING EVENT HANDLERS ====================
     
@@ -1510,6 +1493,30 @@ class ScrollableTabbedControlPanel(QWidget):
             traceback.print_exc()
     
     # ------------------------------------------------------------------
+    # Viewport Resolution Fix
+    # ------------------------------------------------------------------
+    
+    def on_apply_resolution(self):
+        """Apply new viewport resolution"""
+        try:
+            w = int(self.res_w.text())
+            h = int(self.res_h.text())
+            if w <= 0 or h <= 0:
+                raise ValueError("Invalid resolution")
+            
+            # Store the GUI reference if we need it
+            if hasattr(self.raytracer, '_gui'):
+                self.raytracer._gui.resize_viewport(w, h)
+            else:
+                print("GUI reference not available for viewport resize")
+                
+        except ValueError as e:
+            print(f"Invalid resolution: {e}")
+            # Reset to current values
+            self.res_w.setText(str(self.raytracer.width))
+            self.res_h.setText(str(self.raytracer.height))
+    
+    # ------------------------------------------------------------------
     # New functionality from interaction.py
     # ------------------------------------------------------------------
     
@@ -1581,35 +1588,6 @@ class ScrollableTabbedControlPanel(QWidget):
         s = self.s_slider.value() / 100.0
         v = self.v_slider.value() / 100.0
         self.raytracer.set_object_color_hsv(h, s, v)
-    
-    def on_texture_type_changed_scene(self, txt):
-        """Handle texture type change in scene tab"""
-        # Currently just a placeholder
-        pass
-    
-    def apply_texture_to_selected(self):
-        """Apply texture to selected object in scene tab"""
-        tex_type = self.texture_select.currentText()
-        params = {
-            'scale': float(self.tex_scale.value()),
-            'octaves': int(self.tex_octaves.value()),
-            'tint_hsv': (int(self.tint_h.value()), int(self.tint_s.value())/100.0, 1.0) if self.tint_s.value() > 0 else None
-        }
-        success = self.raytracer.apply_texture_to_object(tex_type, params)
-        if not success:
-            print("Texture apply failed or unknown texture type")
-    
-    def on_apply_resolution(self):
-        """Apply new viewport resolution"""
-        try:
-            w = int(self.res_w.text())
-            h = int(self.res_h.text())
-            if w <= 0 or h <= 0:
-                raise ValueError("Invalid resolution")
-            # Note: resize_viewport method would need to be implemented
-            print(f"Resolution change requested: {w}x{h}")
-        except Exception as e:
-            print(f"Invalid resolution: {e}")
 
 class GUI(QMainWindow):
     """Main application window"""
@@ -2176,21 +2154,18 @@ class GUI(QMainWindow):
         if key == Qt.Key_X:
             self.dimension_locks['x'] = not self.dimension_locks['x']
             self.raytracer.set_dimension_lock('x', self.dimension_locks['x'])
-            self.control_panel.lock_x.setChecked(self.dimension_locks['x'])
             self.update_lock_status()
             event.accept()
         
         elif key == Qt.Key_Y:
             self.dimension_locks['y'] = not self.dimension_locks['y']
             self.raytracer.set_dimension_lock('y', self.dimension_locks['y'])
-            self.control_panel.lock_y.setChecked(self.dimension_locks['y'])
             self.update_lock_status()
             event.accept()
         
         elif key == Qt.Key_Z:
             self.dimension_locks['z'] = not self.dimension_locks['z']
             self.raytracer.set_dimension_lock('z', self.dimension_locks['z'])
-            self.control_panel.lock_z.setChecked(self.dimension_locks['z'])
             self.update_lock_status()
             event.accept()
         
@@ -2201,9 +2176,6 @@ class GUI(QMainWindow):
                 self.dragging_object = False
                 self.dimension_locks = {'x': False, 'y': False, 'z': False}
                 self.update_lock_status()
-                self.control_panel.lock_x.setChecked(False)
-                self.control_panel.lock_y.setChecked(False)
-                self.control_panel.lock_z.setChecked(False)
                 
                 # Return to ray tracing if not manually in another mode
                 if not self.manual_mode_change:
@@ -2261,6 +2233,12 @@ class GUI(QMainWindow):
         """Get string representation of active locks"""
         locks = [dim.upper() for dim, locked in self.dimension_locks.items() if locked]
         return ', '.join(locks) if locks else "None"
+    
+    def resize_viewport(self, width, height):
+        """Resize the viewport without resetting scene"""
+        self.raytracer.resize(width, height)
+        
+        print(f"Window resized to {width}x{height}")
     
     def closeEvent(self, event):
         """Handle application close"""

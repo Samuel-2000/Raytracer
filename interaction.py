@@ -1108,7 +1108,7 @@ class RayTracerInteraction:
     # ==================== TEXTURE METHODS ====================
     
     def apply_texture_to_object(self, texture_type: str, params: dict = None):
-        """Apply texture to selected object"""
+        """Apply texture to selected object - FIXED IMAGE TEXTURE"""
         obj = self.get_selected_object()
         if not obj:
             return False
@@ -1117,7 +1117,11 @@ class RayTracerInteraction:
             params = {}
         
         with self.render_lock:
-            if texture_type == "noise":
+            if texture_type == "none":
+                obj.material.albedo_texture = None
+                obj.material.roughness_texture = None
+                
+            elif texture_type == "noise":
                 scale = params.get('scale', 1.0)
                 texture = self.texture_manager.create_noise_texture(scale)
                 obj.material.albedo_texture = texture
@@ -1150,22 +1154,27 @@ class RayTracerInteraction:
             elif texture_type == "image":
                 filename = params.get('filename')
                 if filename:
-                    texture = self.texture_manager.load_image_texture(filename)
-                    if texture:
-                        obj.material.albedo_texture = texture
-                    else:
+                    try:
+                        # Load the image texture
+                        texture = ImageTexture(filename)
+                        if texture:
+                            obj.material.albedo_texture = texture
+                            print(f"Applied image texture: {filename}")
+                        else:
+                            print(f"Failed to load image texture: {filename}")
+                            return False
+                    except Exception as e:
+                        print(f"Error loading image texture: {e}")
                         return False
                 else:
+                    print("No filename provided for image texture")
                     return False
-            
-            elif texture_type == "none":
-                obj.material.albedo_texture = None
-                obj.material.roughness_texture = None
             
             # Update scene
             self.ray_tracer.set_scene(self.scene)
             self.restart_rendering()
             return True
+    
     
     def load_texture_from_file(self, filename: str):
         """Load texture from file and apply to selected object"""
@@ -1462,6 +1471,97 @@ class RayTracerInteraction:
             if sphere.object_id == object_id:
                 return sphere
         return None
+    
+
+
+# Add these methods to the RayTracerInteraction class:
+
+    def enable_floor(self):
+        """Enable the floor (ground sphere)"""
+        with self.render_lock:
+            # Check if ground exists
+            ground_exists = any(sphere.object_id == 0 for sphere in self.scene.spheres)
+            
+            if not ground_exists:
+                print("Creating ground sphere...")
+                
+                # Create ground with texture
+                ground_material = Material()
+                ground_material.albedo = Vector3(0.9, 0.9, 0.9)
+                ground_material.roughness = 0.8
+                ground_material.material_type = MaterialType.DIFFUSE
+                
+                # Add checker texture to ground
+                checker_texture = self.texture_manager.create_checker_texture(
+                    Vector3(0.9, 0.9, 0.9),
+                    Vector3(0.7, 0.7, 0.7),
+                    scale=5.0
+                )
+                ground_material.albedo_texture = checker_texture
+                
+                ground = Sphere()
+                ground.center = Vector3(0, -100.5, 0)
+                ground.radius = 100.0
+                ground.material = ground_material
+                ground.object_id = 0
+                ground.name = "Ground"
+                
+                # Add to both Python list AND C++ scene
+                self.scene.spheres.append(ground)
+                
+                # Use C++ add_sphere to ensure it's in the native container
+                try:
+                    self.scene.add_sphere(ground)
+                except Exception as e:
+                    print(f"Warning: Could not add sphere via C++ method: {e}")
+                    # Fall back to Python list only
+                
+                # Rebuild BVH and update scene
+                try:
+                    self.scene.build_bvh()
+                except Exception as e:
+                    print(f"Warning: Could not build BVH: {e}")
+                
+                # Force update the ray tracer with the new scene
+                self.ray_tracer.set_scene(self.scene)
+                self.restart_rendering()
+                print(f"Floor enabled. Total spheres: {len(self.scene.spheres)}")
+            else:
+                print("Ground already exists")
+
+    def disable_floor(self):
+        """Disable the floor (ground sphere)"""
+        with self.render_lock:
+            # Remove ground sphere (object_id = 0) from Python list
+            original_count = len(self.scene.spheres)
+            self.scene.spheres = [sphere for sphere in self.scene.spheres if sphere.object_id != 0]
+            
+            if len(self.scene.spheres) < original_count:
+                print(f"Removed ground. Remaining spheres: {len(self.scene.spheres)}")
+                
+                # Try to use C++ remove_sphere if available
+                try:
+                    if hasattr(self.scene, "remove_sphere"):
+                        self.scene.remove_sphere(0)
+                except Exception as e:
+                    print(f"Warning: Could not remove sphere via C++ method: {e}")
+                    # Continue with Python list only
+                
+                # Rebuild BVH and update scene
+                try:
+                    self.scene.build_bvh()
+                except Exception as e:
+                    print(f"Warning: Could not build BVH: {e}")
+                
+                # Force update the ray tracer with the new scene
+                self.ray_tracer.set_scene(self.scene)
+                self.restart_rendering()
+                print("Floor disabled")
+            else:
+                print("Ground not found to disable")
+
+
+
     
     # ------------------------------------------------------------------
     # Camera Control Methods
@@ -1838,6 +1938,43 @@ class RayTracerInteraction:
             enhanced = (image - min_val) / (max_val - min_val)
             return np.clip(enhanced, 0, 1)
         return image
+    
+
+    def resize(self, width: int, height: int):
+        """Resize the renderer without resetting the scene"""
+        with self.render_lock:
+            print(f"Resizing from {self.width}x{self.height} to {width}x{height}")
+            
+            # Store the current scene and camera
+            current_scene = self.scene
+            current_camera = self.camera
+            current_settings = self.settings.copy()
+            
+            # Update dimensions
+            self.width = width
+            self.height = height
+            
+            # Update camera aspect ratio
+            self.camera.aspect_ratio = width / height
+            
+            # Update renderer dimensions
+            self.render_state.width = width
+            self.render_state.height = height
+            self.renderer.width = width
+            self.renderer.height = height
+            
+            # Update renderer camera reference
+            self.renderer.camera = self.camera
+            
+            # Resize buffers
+            self.render_state.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+            self.render_state.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+            self.renderer.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+            self.renderer.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+            
+            # Restart rendering
+            self.restart_rendering()
+            print(f"Resize complete: {self.width}x{self.height}")
     
     # ------------------------------------------------------------------
     # Public Getter Methods

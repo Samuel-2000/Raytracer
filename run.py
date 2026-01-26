@@ -124,7 +124,7 @@ def main():
         print("  Camera Movement: WASD + Space/Shift")
         print("  Camera Rotation: Right Mouse Button + Drag")
         print("  Object Selection: Left Click")
-        print("  Object Dragging: Hold X/Y/Z + Left Click + Drag")
+        print("  Object Dragging: Press X/Y/Z to lock dimension, then Left Click + Drag")
         print("  Cancel Operation: ESC")
         print("  Mode Switching: Use buttons in top-left")
         print("=" * 50)
