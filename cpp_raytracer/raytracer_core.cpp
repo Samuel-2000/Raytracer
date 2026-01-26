@@ -85,23 +85,29 @@ bool Sphere::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) con
     return true;
 }
 
-Scene::Scene() : background_color(0.1, 0.1, 0.1), bvh(nullptr), use_bvh(true), debug_mode(false) {}
+Scene::Scene()
+    : background_color(0.1, 0.1, 0.1),
+      bvh(nullptr),
+      use_bvh(true),
+      debug_mode(false),
+      skybox(nullptr)
+{}
 
-Scene::Scene(const Scene& other) 
+Scene::Scene(const Scene& other)
     : spheres(other.spheres),
       background_color(other.background_color),
       bvh(nullptr),
       use_bvh(other.use_bvh),
-      debug_mode(other.debug_mode) {}
+      debug_mode(other.debug_mode),
+      skybox(other.skybox)
+{}
 
 Scene::~Scene() {
     delete bvh;
 }
 
 Scene& Scene::operator=(const Scene& other) {
-    if (this == &other) {
-        return *this;
-    }
+    if (this == &other) return *this;
 
     delete bvh;
     bvh = nullptr;
@@ -110,6 +116,7 @@ Scene& Scene::operator=(const Scene& other) {
     background_color = other.background_color;
     use_bvh = other.use_bvh;
     debug_mode = other.debug_mode;
+    skybox = other.skybox;
 
     if (use_bvh) {
         build_bvh();
@@ -118,15 +125,11 @@ Scene& Scene::operator=(const Scene& other) {
     return *this;
 }
 
-void Scene::set_skybox(Skybox* new_skybox) {
-    // Delete old skybox if exists
-    if (skybox != nullptr && skybox != new_skybox) {
-        delete skybox;
-    }
-    skybox = new_skybox;
+void Scene::set_skybox(std::shared_ptr<Skybox> new_skybox) {
+    skybox = std::move(new_skybox);
 }
 
-Skybox* Scene::get_skybox() const {
+std::shared_ptr<Skybox> Scene::get_skybox() const {
     return skybox;
 }
 
@@ -306,6 +309,7 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     if (scene.skybox) {
         return scene.skybox->get_color(ray.direction);
     }
+
     
     return scene.background_color;
 }

@@ -94,8 +94,8 @@ public:
 class Scene {
 public:
     std::vector<Sphere> spheres;
-    Skybox* skybox;
     Vector3 background_color;
+    std::shared_ptr<Skybox> skybox;
     bool use_bvh;
     bool debug_mode;
     BVH* bvh;
@@ -111,8 +111,9 @@ public:
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
 
-    void set_skybox(Skybox* new_skybox);
-    Skybox* get_skybox() const;
+    void set_skybox(std::shared_ptr<Skybox> new_skybox);
+    std::shared_ptr<Skybox> get_skybox() const;
+
 };
 
 class RayTracer {
@@ -146,3 +147,5 @@ public:
     
     Scene& get_scene() { return scene; }
 };
+
+

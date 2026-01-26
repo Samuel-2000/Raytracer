@@ -96,7 +96,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .export_values();
     
     // Skybox class
-    py::class_<Skybox>(m, "Skybox")
+    py::class_<Skybox, std::shared_ptr<Skybox>>(m, "Skybox")
         .def(py::init<>())
         .def("set_type", &Skybox::set_type)
         .def("set_colors", [](Skybox& skybox, const Vector3& c1, const Vector3& c2, const Vector3& c3) {
@@ -105,6 +105,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("set_atmosphere_colors", &Skybox::set_atmosphere_colors)
         .def("load_image", &Skybox::load_image)
         .def("get_color", &Skybox::get_color);
+
     
     // Material class
     py::class_<Material>(m, "Material")
@@ -159,9 +160,9 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("build_bvh", &Scene::build_bvh)
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection)
-        .def("set_skybox", &Scene::set_skybox, py::arg("skybox"), 
-             py::keep_alive<1, 2>())  // Keep Skybox alive while Scene exists
-        .def("get_skybox", &Scene::get_skybox, py::return_value_policy::reference);
+        .def("set_skybox", &Scene::set_skybox)
+        .def("get_skybox", &Scene::get_skybox);
+
 
     // RayTracer
     py::class_<RayTracer>(m, "RayTracer")
@@ -176,3 +177,4 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("trace_ray", &RayTracer::trace_ray)
         .def("get_scene", &RayTracer::get_scene, py::return_value_policy::reference);
 }
+

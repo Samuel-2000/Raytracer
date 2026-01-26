@@ -506,6 +506,8 @@ class SceneManager:
         
         # Set default skybox
         skybox = SkyboxManager.create_default()
+        print(f"Skybox type: {type(skybox)}")
+        print(f"Skybox is None: {skybox is None}")
         scene.set_skybox(skybox)
         
         # Ground with texture
