@@ -1630,7 +1630,6 @@ class GUI(QMainWindow):
         self.manual_mode_change = False
         
         self.setup_ui()
-        self.setup_rendering()
 
         # Timer for updating camera controls
         self.camera_update_timer = QTimer()
@@ -1641,13 +1640,13 @@ class GUI(QMainWindow):
         self._key_states_cleared = False
 
         self.recording_mode = False
-        self.record_button = None
     
-
         # Timer for recording updates
         self.recording_timer = QTimer()
         self.recording_timer.timeout.connect(self.update_recording)
         self.recording_timer.stop()  # Don't start until recording begins
+
+        self.setup_rendering()
 
     def setup_ui(self):
         """Setup the main UI"""
