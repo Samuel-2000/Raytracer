@@ -8,6 +8,8 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent, QIntValidator
 import cv2
 
+from cpp_raytracer.raytracer_cpp import Vector3
+
 from interaction import RayTracerInteraction, RenderMode
 
 class RenderThread(QThread):

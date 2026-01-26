@@ -1,4 +1,5 @@
 # interaction.py
+
 import os
 import numpy as np
 import time
@@ -113,6 +114,32 @@ class CameraController:
         
         return move_vector
     
+    def rotate(self, dx: float, dy: float):
+        """Rotate camera based on mouse movement"""
+        sensitivity = self.settings['camera_rotate_speed']
+        yaw = -dx * sensitivity
+        pitch = -dy * sensitivity
+        
+        # Limit pitch to prevent flipping
+        pitch = max(-1.5, min(1.5, pitch))
+        
+        # Current orientation
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        
+        # Yaw rotation (around world up)
+        yaw_rot = Matrix3.rotation_y(yaw)
+        forward = yaw_rot * forward
+        
+        # Pitch rotation (around camera right)
+        if abs(pitch) > 0.001:
+            pitch_rot = Matrix3.rotation_axis(right, pitch)
+            forward = pitch_rot * forward
+        
+        # Update camera target
+        self.camera.target = self.camera.position + forward
+        self.update_camera_frame()
+    
     def apply_bounds(self):
         """Apply bounds to camera position"""
         self.camera.position.x = max(-20, min(20, self.camera.position.x))
@@ -185,7 +212,7 @@ class MaterialPresets:
     def create_wood():
         """Create wood material"""
         material = Material()
-        material.material_type = MaterialType.WOOD  # Use enum instead of integer
+        material.material_type = MaterialType.WOOD
         material.albedo = Vector3(0.6, 0.4, 0.2)
         material.metallic = 0.0
         material.roughness = 0.7
@@ -198,7 +225,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.8, 0.8, 0.8)
         material = Material()
-        material.material_type = MaterialType.PLASTIC  # Use enum instead of integer
+        material.material_type = MaterialType.PLASTIC
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.3
@@ -211,7 +238,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.8, 0.8, 0.8)
         material = Material()
-        material.material_type = MaterialType.METAL  # Use enum instead of integer
+        material.material_type = MaterialType.METAL
         material.albedo = color
         material.metallic = 1.0
         material.roughness = 0.1
@@ -222,7 +249,7 @@ class MaterialPresets:
     def create_rusty_metal():
         """Create rusty metal material"""
         material = Material()
-        material.material_type = MaterialType.RUSTY_METAL  # Use enum instead of integer
+        material.material_type = MaterialType.RUSTY_METAL
         material.albedo = Vector3(0.7, 0.3, 0.1)
         material.metallic = 0.8
         material.roughness = 0.6
@@ -233,7 +260,7 @@ class MaterialPresets:
     def create_marble():
         """Create marble material"""
         material = Material()
-        material.material_type = MaterialType.MARBLE  # Use enum instead of integer
+        material.material_type = MaterialType.MARBLE
         material.albedo = Vector3(0.9, 0.9, 0.85)
         material.metallic = 0.0
         material.roughness = 0.2
@@ -246,7 +273,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.95, 0.95, 0.95)
         material = Material()
-        material.material_type = MaterialType.GLASS  # Use enum instead of integer
+        material.material_type = MaterialType.GLASS
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.0
@@ -257,7 +284,7 @@ class MaterialPresets:
     def create_mirror():
         """Create mirror material"""
         material = Material()
-        material.material_type = MaterialType.MIRROR  # Use enum instead of integer
+        material.material_type = MaterialType.MIRROR
         material.albedo = Vector3(1.0, 1.0, 1.0)
         material.metallic = 1.0
         material.roughness = 0.0
@@ -270,7 +297,7 @@ class MaterialPresets:
         if color is None:
             color = Vector3(0.1, 0.1, 0.1)
         material = Material()
-        material.material_type = MaterialType.RUBBER  # Use enum instead of integer
+        material.material_type = MaterialType.RUBBER
         material.albedo = color
         material.metallic = 0.0
         material.roughness = 0.9
@@ -367,6 +394,7 @@ class ObjectDragger:
     
     def start_drag(self, x: float, y: float) -> bool:
         """Start dragging an object at screen coordinates (x, y)"""
+        # This will be called from RayTracerInteraction.start_object_dragging
         return False
     
     def update_drag(self, dx: float, dy: float):
@@ -496,6 +524,218 @@ class RenderStateManager:
         else:
             self.current_mode = self.previous_mode
 
+class Renderer:
+    """Handles different rendering modes"""
+    
+    def __init__(self, width: int, height: int, camera: Camera, scene: Scene):
+        self.width = width
+        self.height = height
+        self.camera = camera
+        self.scene = scene
+        
+        # Buffers
+        self.silhouette_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+        self.wireframe_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    def render_silhouette(self, selected_object_id: int = -1) -> np.ndarray:
+        """Render silhouette view for fast object editing"""
+        self.silhouette_buffer.fill(0)
+        width, height = self.width, self.height
+        
+        # Use the same camera setup as in C++ Camera::get_ray()
+        fov = self.camera.fov * 3.14159 / 180.0
+        aspect_ratio = width / height
+        tan_fov = math.tan(fov / 2.0)
+        
+        # Camera basis vectors (same as in C++)
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        up = right.cross(forward).normalize()
+        
+        # Helper function to project 3D point to 2D screen
+        def project_point(point: Vector3):
+            # Convert from world to camera space
+            obj_pos = point - self.camera.position
+            
+            # Compute coordinates in camera basis
+            z_cam = obj_pos.dot(forward)
+            if z_cam <= 0.001:  # Behind or too close to camera
+                return None
+            
+            x_cam = obj_pos.dot(right)
+            y_cam = obj_pos.dot(up)
+            
+            # Apply perspective projection (same as C++ get_ray but inverted)
+            # FIX: Added * 0.5 factor to match C++ ray generation
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
+            
+            # Clamp to screen bounds
+            x_screen = max(0, min(width - 1, x_screen))
+            y_screen = max(0, min(height - 1, y_screen))
+            
+            return (int(x_screen), int(y_screen), z_cam)
+        
+        # Render all spheres
+        for sphere in self.scene.spheres:
+            if sphere.object_id == 0:  # Skip ground
+                continue
+            
+            # Project sphere center
+            projected = project_point(sphere.center)
+            if projected is None:
+                continue
+                
+            x_screen, y_screen, z_cam = projected
+            
+            # Calculate projected radius using perspective - FIXED
+            # The correct formula: radius_pixels = (sphere_radius / distance) * (screen_height / (2 * tan_fov))
+            sphere_radius_pixels = (sphere.radius / z_cam) * (height / (2 * tan_fov))
+            radius = max(2, int(sphere_radius_pixels))
+            
+            if 0 <= x_screen < width and 0 <= y_screen < height:
+                center = (int(x_screen), int(y_screen))
+                
+                # Color coding
+                if sphere.object_id == selected_object_id:
+                    color = (255, 255, 0)  # Yellow for selected
+                    thickness = 3
+                else:
+                    color = (200, 200, 200)  # Gray for others
+                    thickness = 1
+                
+                cv2.circle(self.silhouette_buffer, center, radius, color, thickness)
+                
+                # Crosshair for selected
+                if sphere.object_id == selected_object_id:
+                    cv2.line(self.silhouette_buffer,
+                            (center[0] - 10, center[1]),
+                            (center[0] + 10, center[1]),
+                            (0, 255, 255), 2)
+                    cv2.line(self.silhouette_buffer,
+                            (center[0], center[1] - 10),
+                            (center[0], center[1] + 10),
+                            (0, 255, 255), 2)
+        
+        return self.silhouette_buffer.astype(np.float32) / 255.0
+
+    def render_wireframe(self, selected_object_id: int = -1) -> np.ndarray:
+        """Render wireframe view for fast camera navigation"""
+        self.wireframe_buffer.fill(0)
+        width, height = self.width, self.height
+        
+        # Camera parameters
+        fov = self.camera.fov * 3.14159 / 180.0
+        aspect_ratio = width / height
+        tan_fov = math.tan(fov / 2.0)  # Changed from np.tan to math.tan for consistency
+        
+        forward = (self.camera.target - self.camera.position).normalize()
+        right = forward.cross(Vector3(0, 1, 0)).normalize()
+        up = right.cross(forward).normalize()
+        
+        # Helper function with corrected projection
+        def project_point(point: Vector3) -> Optional[Tuple[int, int]]:
+            obj_pos = point - self.camera.position
+            z_cam = obj_pos.dot(forward)
+            
+            if z_cam <= 0.1:
+                return None
+            
+            x_cam = obj_pos.dot(right)
+            y_cam = obj_pos.dot(up)
+            
+            # Correct projection - FIXED: Added * 0.5 factor
+            x_screen = (x_cam / (z_cam * tan_fov * aspect_ratio) * 0.5 + 0.5) * width
+            y_screen = (0.5 - y_cam / (z_cam * tan_fov) * 0.5) * height
+            
+            # Clamp to screen bounds
+            x_screen = max(0, min(width - 1, x_screen))
+            y_screen = max(0, min(height - 1, y_screen))
+            
+            return (int(x_screen), int(y_screen))
+        
+        # Draw ground grid
+        self._render_grid(project_point)
+        
+        # Draw spheres
+        for sphere in self.scene.spheres:
+            if sphere.object_id == 0:
+                continue
+            
+            center_screen = project_point(sphere.center)
+            if center_screen:
+                # Calculate screen radius - FIXED
+                distance = (sphere.center - self.camera.position).dot(forward)
+                if distance > 0:
+                    radius_screen = (sphere.radius / distance) * (height / (2 * tan_fov))
+                    radius_screen = max(2, int(radius_screen))
+                    
+                    # Color
+                    if sphere.object_id == selected_object_id:
+                        color = (255, 255, 0)
+                        thickness = 2
+                    else:
+                        color = (200, 200, 200)
+                        thickness = 1
+                    
+                    cv2.circle(self.wireframe_buffer, center_screen, radius_screen, color, thickness)
+                    
+                    # Axes for selected
+                    if sphere.object_id == selected_object_id:
+                        self._render_axes(sphere, center_screen, project_point)
+        
+        return self.wireframe_buffer.astype(np.float32) / 255.0
+    
+    def _render_grid(self, project_point):
+        """Render ground grid"""
+        grid_size = 10
+        grid_step = 1.0
+        
+        for i in range(-grid_size, grid_size + 1):
+            x = i * grid_step
+            
+            # X lines
+            for j in range(-grid_size, grid_size):
+                z1 = j * grid_step
+                z2 = (j + 1) * grid_step
+                
+                p1 = Vector3(x, 0, z1)
+                p2 = Vector3(x, 0, z2)
+                
+                s1 = project_point(p1)
+                s2 = project_point(p2)
+                
+                if s1 and s2:
+                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
+            
+            # Z lines
+            for j in range(-grid_size, grid_size):
+                x1 = j * grid_step
+                x2 = (j + 1) * grid_step
+                
+                p1 = Vector3(x1, 0, x)
+                p2 = Vector3(x2, 0, x)
+                
+                s1 = project_point(p1)
+                s2 = project_point(p2)
+                
+                if s1 and s2:
+                    cv2.line(self.wireframe_buffer, s1, s2, (80, 80, 80), 1)
+    
+    def _render_axes(self, sphere: Sphere, center_screen: Tuple[int, int], project_point):
+        """Render XYZ axes for selected object"""
+        axes = [
+            (Vector3(0.5, 0, 0), (255, 0, 0)),   # X - Red
+            (Vector3(0, 0.5, 0), (0, 255, 0)),   # Y - Green
+            (Vector3(0, 0, -0.5), (0, 0, 255))   # Z - Blue
+        ]
+        
+        for axis_vec, axis_color in axes:
+            end = sphere.center + axis_vec
+            end_screen = project_point(end)
+            if end_screen:
+                cv2.line(self.wireframe_buffer, center_screen, end_screen, axis_color, 2)
+
 class SceneManager:
     """Manages scene creation and object manipulation"""
     
@@ -514,7 +754,7 @@ class SceneManager:
         ground_material = Material()
         ground_material.albedo = Vector3(0.9, 0.9, 0.9)
         ground_material.roughness = 0.8
-        ground_material.material_type = MaterialType.DIFFUSE  # Add this
+        ground_material.material_type = MaterialType.DIFFUSE
         
         # Add checker texture to ground if available
         if texture_manager:
@@ -645,8 +885,7 @@ class RayTracerInteraction:
         self.camera_controller = CameraController(self.camera, self.settings)
         self.object_dragger = ObjectDragger(self.scene, self.camera_controller, self.settings)
         self.render_state = RenderStateManager(width, height)
-        
-        # Note: Renderer will be initialized later as it needs the scene
+        self.renderer = Renderer(width, height, self.camera, self.scene)
         
         # Ray tracing state
         self.accumulated_image = None
@@ -1248,6 +1487,7 @@ class RayTracerInteraction:
                 # Start interaction when any key is pressed
                 if self.render_state.current_mode == RenderMode.RAYTRACING:
                     self.render_state.start_interaction()
+                    self._process_frame_for_display(0.016)
 
             # If all released, perform cleanup immediately
             all_released = not any(self.camera_controller.keys_pressed.values())
@@ -1274,6 +1514,8 @@ class RayTracerInteraction:
             
             # Also update the ray tracer's camera
             self.ray_tracer.set_camera(self.camera)
+            # Force display update
+            self._process_frame_for_display(0.05)
     
     def stop_camera_rotation(self):
         """Stop camera rotation and return to previous mode"""
@@ -1316,6 +1558,7 @@ class RayTracerInteraction:
         
         # Update ray tracer scene
         self.ray_tracer.set_scene(self.scene)
+        self._process_frame_for_display(0.016)
     
     def stop_object_dragging(self):
         """Stop dragging object"""
@@ -1426,6 +1669,9 @@ class RayTracerInteraction:
                 # Ensure we're in wireframe mode during movement
                 if self.render_state.current_mode != RenderMode.WIREFRAME:
                     self.render_state.set_mode(RenderMode.WIREFRAME)
+                
+                # Force a wireframe update
+                self._process_frame_for_display(0.05)
     
     def _render_worker(self):
         """Worker function for ray tracing"""
@@ -1490,10 +1736,23 @@ class RayTracerInteraction:
     
     def _process_frame_for_display(self, render_time: float):
         """Process frame for display based on current mode"""
-        # For now, we'll just handle raytracing mode
-        # Wireframe and silhouette would need a separate Renderer class
-        
-        if self.render_state.current_mode == RenderMode.RAYTRACING:
+        if self.render_state.current_mode == RenderMode.SILHOUETTE:
+            display_image = self.renderer.render_silhouette(
+                self.object_dragger.selected_object_id
+            )
+            enhanced_image = display_image
+            mode_str = "silhouette"
+            denoised_images = {}
+            
+        elif self.render_state.current_mode == RenderMode.WIREFRAME:
+            display_image = self.renderer.render_wireframe(
+                self.object_dragger.selected_object_id
+            )
+            enhanced_image = display_image
+            mode_str = "wireframe"
+            denoised_images = {}
+            
+        else:  # RAYTRACING
             if self.accumulated_image is None:
                 return
             
@@ -1509,12 +1768,6 @@ class RayTracerInteraction:
                         denoised_images[method] = self.denoiser.denoise(display_image, method)
                     except Exception as e:
                         print(f"Denoising error: {e}")
-        else:
-            # For wireframe/silhouette, we'll use placeholder
-            display_image = np.zeros((self.height, self.width, 3), dtype=np.float32)
-            enhanced_image = display_image
-            mode_str = "wireframe" if self.render_state.current_mode == RenderMode.WIREFRAME else "silhouette"
-            denoised_images = {}
         
         frame_data = {
             'display': display_image,
@@ -1548,6 +1801,7 @@ class RayTracerInteraction:
                 self.restart_rendering()
         else:
             self.render_state.return_to_previous_mode()
+            self._process_frame_for_display(0.016)
     
     def _handle_rotation_stopped(self):
         """Handle when camera rotation stops"""
@@ -1567,6 +1821,7 @@ class RayTracerInteraction:
         else:
             # Return to whatever mode we were in before
             self.render_state.return_to_previous_mode()
+            self._process_frame_for_display(0.016)
     
     def _tone_map(self, image: np.ndarray, exposure: float) -> np.ndarray:
         """Apply tone mapping"""
