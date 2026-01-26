@@ -18,6 +18,8 @@ from cpp_raytracer.raytracer_cpp import Skybox, SkyboxType
 from cpp_raytracer.raytracer_cpp import MaterialType
 from utils import FrameRateLimiter
 
+from video_renderer import CameraRecorder
+
 class RenderMode(Enum):
     """Rendering modes for different interaction scenarios"""
     RAYTRACING = 0
@@ -865,6 +867,10 @@ class RayTracerInteraction:
         # Immediately push our initialized camera back to C++ so both sides are in sync
         self.ray_tracer.set_camera(self.camera)
 
+        # Camera recording
+        self.camera_recorder = CameraRecorder(self)
+        self.recording_mode = False
+
         
         # Settings
         self.settings = {
@@ -914,10 +920,61 @@ class RayTracerInteraction:
         self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
         self.camera_move_thread.start()
         
-        print(f"✓ Initialized Interactive Ray Tracer with Skybox & Textures ({width}x{height})")
-        print(f"  Controls: WASD+Space/Ctrl to move, Right Mouse to rotate")
-        print(f"  Object Drag: Hold X/Y/Z + Left Click + Drag")
+        print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
+        print("Controls:")
+        print("  Camera Movement: WASD + Space/Shift")
+        print("  Camera Rotation: Right Mouse Button + Drag")
+        print("  Object Selection: Left Click")
+        print("  Object Dragging: Press X/Y/Z to lock dimension, then Left Click + Drag")
+        print("  Cancel Operation: ESC")
+        print("  Manual Mode Switching: Use buttons in top-left")
+        print("=" * 50)
     
+
+    def toggle_recording_mode(self):
+        """Toggle camera recording mode"""
+        with self.render_lock:
+            if not self.recording_mode:
+                # Start recording
+                self.recording_mode = True
+                self.camera_recorder.start_recording()
+                
+                # Switch to wireframe mode for performance
+                if self.render_state.current_mode != RenderMode.WIREFRAME:
+                    self.render_state.set_mode(RenderMode.WIREFRAME)
+                    if self._gui:
+                        self._gui.manual_mode_change = True
+                        self._gui.wireframe_btn.setChecked(True)
+                
+                print("Recording started")
+                return True
+            else:
+                # Stop recording
+                self.recording_mode = False
+                self.camera_recorder.stop_recording()
+                
+                # Return to ray tracing
+                self.render_state.set_mode(RenderMode.RAYTRACING)
+                if self._gui:
+                    self._gui.on_raytrace_mode()
+                
+                print("Recording stopped")
+                return True
+
+    def update_recording(self):
+        """Update recording with current camera frame"""
+        if self.recording_mode:
+            self.camera_recorder.record_frame()
+
+    def get_recorded_frames(self):
+        """Get all recorded frames"""
+        return self.camera_recorder.get_all_frames()
+
+    def clear_recording(self):
+        """Clear all recorded frames"""
+        self.camera_recorder.clear_recording()
+
+
     def _init_camera(self):
         """Initialize camera position and orientation"""
         self.camera.position = Vector3(0, 1, 5)
@@ -1710,6 +1767,9 @@ class RayTracerInteraction:
         while self.camera_move_active:
             try:
                 current_time = time.time()
+                
+                if self.recording_mode:
+                    self.update_recording()
                 
                 # Check for manual movement and prevent auto-movement
                 keys_pressed = any(self.camera_controller.keys_pressed.values())

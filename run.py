@@ -105,6 +105,14 @@ def main():
         if not check_cpp_extension():
             print("C++ extension still not available after build!")
             sys.exit(1)
+
+
+    # Create output directory for videos
+    output_dir = "output"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created output directory: {output_dir}")
+
     
     # Import and run the main application
     try:
@@ -113,21 +121,10 @@ def main():
 
         app = QApplication(sys.argv)
         
-        print("\n" + "=" * 50)
-        print("Starting Interactive Ray Tracer GUI...")
-        print("=" * 50)
         
         gui = GUI()
         gui.show()
-        
-        print("Controls:")
-        print("  Camera Movement: WASD + Space/Shift")
-        print("  Camera Rotation: Right Mouse Button + Drag")
-        print("  Object Selection: Left Click")
-        print("  Object Dragging: Press X/Y/Z to lock dimension, then Left Click + Drag")
-        print("  Cancel Operation: ESC")
-        print("  Mode Switching: Use buttons in top-left")
-        print("=" * 50)
+    
         
         sys.exit(app.exec_())
 

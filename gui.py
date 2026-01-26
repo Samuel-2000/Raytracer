@@ -3,7 +3,7 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
                              QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox,
-                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QGridLayout)
+                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QGridLayout, QDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent, QIntValidator
 import cv2
@@ -11,6 +11,8 @@ import cv2
 from cpp_raytracer.raytracer_cpp import Vector3
 
 from interaction import RayTracerInteraction, RenderMode
+
+from video_renderer import SegmentDialog, VideoRenderDialog
 
 class RenderThread(QThread):
     """Thread for handling rendering updates"""
@@ -1637,7 +1639,16 @@ class GUI(QMainWindow):
         
         # Fix: Prevent auto-movement by clearing key states on focus loss
         self._key_states_cleared = False
+
+        self.recording_mode = False
+        self.record_button = None
     
+
+        # Timer for recording updates
+        self.recording_timer = QTimer()
+        self.recording_timer.timeout.connect(self.update_recording)
+        self.recording_timer.stop()  # Don't start until recording begins
+
     def setup_ui(self):
         """Setup the main UI"""
         self.setWindowTitle("C++ Ray Tracer - Interactive Controls with Skybox & Textures")
@@ -1823,7 +1834,7 @@ class GUI(QMainWindow):
         layout = QVBoxLayout()
         widget.setLayout(layout)
         
-        # Mode selector
+        # Mode selector with record button
         mode_widget = QWidget()
         mode_layout = QHBoxLayout()
         mode_widget.setLayout(mode_layout)
@@ -1843,6 +1854,26 @@ class GUI(QMainWindow):
         self.silhouette_btn.setCheckable(True)
         self.silhouette_btn.clicked.connect(self.on_silhouette_mode)
         mode_layout.addWidget(self.silhouette_btn)
+        
+        # Add record button
+        self.record_button = QPushButton("⏺ Record (R)")
+        self.record_button.setCheckable(True)
+        self.record_button.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 5px 10px;
+            }
+            QPushButton:checked {
+                background-color: #ff4444;
+                color: white;
+                font-weight: bold;
+            }
+        """)
+        self.record_button.clicked.connect(self.toggle_recording)
+        mode_layout.addWidget(self.record_button)
         
         mode_layout.addStretch()
         layout.addWidget(mode_widget)
@@ -1908,7 +1939,7 @@ class GUI(QMainWindow):
         instructions = QLabel(
             "<b>Controls:</b> WASD+Space/Ctrl to move camera | "
             "<b>Right Click + Drag</b> to rotate camera | "
-            "<b>Hold X/Y/Z + Left Click + Drag</b> to move object | "
+            "<b>Press X/Y/Z to lock dimension, then Left Click + Drag</b> to move object | "
             "<b>IJKLOU</b> to move selected object | "
             "<b>ESC</b> to cancel"
         )
@@ -1931,6 +1962,88 @@ class GUI(QMainWindow):
         self.render_thread.frame_ready.connect(self.on_frame_ready)
         self.render_thread.rendering_finished.connect(self.on_rendering_finished)
         self.render_thread.start()
+
+    def toggle_recording(self):
+        """Toggle camera recording mode"""
+        # Check if record_button exists
+        if not hasattr(self, 'record_button') or self.record_button is None:
+            print("Warning: record_button not initialized yet")
+            return
+        
+        if self.raytracer.toggle_recording_mode():
+            self.recording_mode = not self.recording_mode
+            self.record_button.setChecked(self.recording_mode)
+            
+            # Start/stop recording timer
+            if self.recording_mode:
+                self.recording_timer.start(33)  # ~30 FPS
+            else:
+                self.recording_timer.stop()
+            
+            if not self.recording_mode:
+                # Recording stopped, show segment dialog
+                total_frames = self.raytracer.camera_recorder.get_total_frames()
+                if total_frames > 0:
+                    dialog = SegmentDialog(self, total_frames)
+                    result = dialog.exec_()
+                    
+                    if result == QDialog.Accepted:
+                        if dialog.result_code == SegmentDialog.CUT_AND_CONTINUE:
+                            # Just cut, continue recording new segment
+                            self.raytracer.camera_recorder.segments.append(
+                                self.raytracer.camera_recorder.current_segment.copy()
+                            )
+                            self.raytracer.camera_recorder.current_segment = []
+                            print("Segment cut, ready for next recording")
+                        elif dialog.result_code == SegmentDialog.RENDER_NOW:
+                            # Show render settings dialog
+                            all_frames = self.raytracer.get_recorded_frames()
+                            if all_frames:
+                                render_dialog = VideoRenderDialog(self, self.raytracer, all_frames)
+                                render_dialog.exec_()
+                                # Clear recording after rendering
+                                self.raytracer.clear_recording()
+                    else:
+                        # Cancel/discard recording
+                        self.raytracer.clear_recording()
+        
+        # Update status
+        if self.recording_mode:
+            self.status_label.setText("RECORDING - Move camera to record path")
+            self.record_button.setText("⏺ Stop Recording (R)")
+            self.record_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff4444;
+                    color: white;
+                    font-weight: bold;
+                    border: 2px solid #ff8888;
+                    border-radius: 3px;
+                    padding: 5px 10px;
+                }
+            """)
+        else:
+            self.record_button.setText("⏺ Record (R)")
+            self.record_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 3px;
+                    padding: 5px 10px;
+                }
+            """)
+
+    def update_recording(self):
+        """Update recording if in recording mode"""
+        if self.recording_mode:
+            self.raytracer.update_recording()
+            
+            # Update status with frame count
+            frames = len(self.raytracer.camera_recorder.current_segment)
+            if hasattr(self, 'status_label'):
+                current_text = self.status_label.text()
+                if "Recording:" not in current_text and self.recording_mode:
+                    self.status_label.setText(f"{current_text} | Recording: {frames} frames")
 
     def update_camera_controls(self):
         """Update camera control values from current camera state"""
@@ -2023,20 +2136,27 @@ class GUI(QMainWindow):
         
         # Update status
         mode = frame_data.get('mode', 'raytracing')
+        
+        # Add recording info
+        recording_info = ""
+        if self.recording_mode:
+            frames = len(self.raytracer.camera_recorder.current_segment)
+            recording_info = f" | Recording: {frames} frames"
+        
         if mode == 'wireframe':
-            status = "Wireframe Mode - Right Drag to Rotate, WASD to Move"
+            status = f"Wireframe Mode{recording_info} - Right Drag to Rotate, WASD to Move"
         elif mode == 'silhouette':
             if self.dragging_object:
                 locks = self.get_lock_string()
-                status = f"Dragging Object - Locks: {locks}"
+                status = f"Dragging Object - Locks: {locks}{recording_info}"
             else:
-                status = "Silhouette Mode - Hold X/Y/Z + Drag to Move Objects"
+                status = f"Silhouette Mode{recording_info} - Hold X/Y/Z + Drag to Move Objects"
         else:
             if frame_data['is_raytracing']:
                 status = (f"Samples: {frame_data['samples']} | "
-                         f"Batch Time: {frame_data['render_time']:.3f}s")
+                        f"Batch Time: {frame_data['render_time']:.3f}s{recording_info}")
             else:
-                status = "Ray Tracing Mode"
+                status = f"Ray Tracing Mode{recording_info}"
         
         self.status_label.setText(status)
         
@@ -2131,8 +2251,15 @@ class GUI(QMainWindow):
     def keyPressEvent(self, event):
         """Handle keyboard input with better debouncing"""
         key = event.key()
-
+        
         self.manual_mode_change = False
+
+        if key == Qt.Key_R:
+            # Only toggle recording if button exists
+            if hasattr(self, 'record_button') and self.record_button is not None:
+                self.toggle_recording()
+            event.accept()
+            return
         
         # Camera movement keys
         if key in self.camera_keys:
