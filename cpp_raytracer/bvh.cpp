@@ -1,4 +1,6 @@
 // bvh.cpp
+// BVH implementácia podľa Wald, "Real-Time Ray Tracing and Interactive Global Illumination" (2004)
+
 #define _USE_MATH_DEFINES
 #include "bvh.h"
 #include "raytracer_core.h"

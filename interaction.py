@@ -9,6 +9,9 @@ from typing import Dict, Optional, Tuple, List
 import math
 from enum import Enum
 import cv2
+import random
+
+from PyQt5.QtCore import QThread, pyqtSignal
 
 from denoiser import Denoiser
 from cpp_raytracer.raytracer_cpp import RayTracer, Scene, Sphere, Material, Vector3, Camera
@@ -738,6 +741,10 @@ class Renderer:
             if end_screen:
                 cv2.line(self.wireframe_buffer, center_screen, end_screen, axis_color, 2)
 
+
+
+
+
 class SceneManager:
     """Manages scene creation and object manipulation"""
     
@@ -849,6 +856,167 @@ class SceneManager:
 
 
 
+class SceneGenerator:
+    """Generates test scenes for benchmarking"""
+    
+    def __init__(self):
+        #self.scene_names = ['simple', 'many_objects_100', 'many_objects_1k', 'many_objects_10k', 'many_objects_100k', 'many_objects_1M']
+        self.scene_names = ['simple', 'many_objects_100', 'many_objects_1k', 'many_objects_10k']
+    
+    def get_scene_names(self):
+        return self.scene_names
+    
+    def create_scene(self, name, texture_manager):
+        if name == 'simple':
+            return SceneManager.create_interactive_scene(texture_manager)
+        elif name.startswith('many_objects'):
+            num = int(name.split('_')[-1].replace('k','000').replace('M','000000'))
+            return self._create_many_objects_scene(num, texture_manager)
+        else:
+            return None
+    
+    def _create_many_objects_scene(self, num_objects, texture_manager):
+        scene = Scene()
+        
+        # Ground
+        ground = Sphere()
+        ground.center = Vector3(0, -100.5, 0)
+        ground.radius = 100.0
+        ground.material = Material()
+        ground.material.albedo = Vector3(0.7, 0.7, 0.7)
+        ground.material.roughness = 0.8
+        ground.material.material_type = MaterialType.DIFFUSE
+        ground.object_id = 0
+        ground.name = "Ground"
+        scene.add_sphere(ground)
+        
+        # Dynamický rozsah podľa počtu objektov
+        # Pre 10k objektov max_range ~ 10, pre 1M ~ 50
+        max_range = min(50, 5 * (num_objects ** (1/3)))
+        min_range = -max_range
+        
+        random.seed(42)
+        for i in range(1, num_objects + 1):
+            sphere = Sphere()
+            sphere.radius = random.uniform(0.1, 0.5)
+            sphere.center = Vector3(
+                random.uniform(min_range, max_range),
+                random.uniform(0.2, 5),
+                random.uniform(min_range, max_range)
+            )
+            mat_type = random.choice([MaterialType.DIFFUSE, MaterialType.METAL, MaterialType.PLASTIC])
+            sphere.material = Material()
+            sphere.material.material_type = mat_type
+            sphere.material.albedo = Vector3(random.random(), random.random(), random.random())
+            sphere.material.metallic = 0.0 if mat_type == MaterialType.DIFFUSE else 0.9
+            sphere.material.roughness = random.uniform(0.1, 0.7)
+            sphere.object_id = i
+            sphere.name = f"Obj_{i}"
+            scene.add_sphere(sphere)
+        
+        scene.build_bvh()
+        return scene
+    
+
+
+
+
+class BenchmarkRunner(QThread):
+    """Thread for running benchmarks"""
+    progress = pyqtSignal(int, int)  # current, total
+    finished = pyqtSignal(str)       # csv_path
+    error = pyqtSignal(str)
+    current_test = pyqtSignal(str, bool, bool, bool, bool, int, int)  # scene, bvh, adaptive, subsample, neural, current, total
+    
+    def __init__(self, raytracer):
+        super().__init__()
+        self.raytracer = raytracer
+        self.stopped = False
+        self.MAX_OBJECTS_FOR_NO_BVH = 2000   # prah počtu objektov
+    
+    def run(self):
+        try:
+            combos = []
+            for bvh in [False, True]:
+                for adaptive in [False, True]:
+                    for subsample in [False, True]:
+                        for neural in [False, True]:
+                            combos.append((bvh, adaptive, subsample, neural))
+            
+            scenes = self.raytracer.get_available_scenes()
+            results = []
+            total = len(combos) * len(scenes)
+            current = 0
+            
+            original_bvh = self.raytracer.settings['bvh_enabled']
+            original_adaptive = self.raytracer.settings['adaptive_supersampling']
+            original_subsample = self.raytracer.settings['subsampling']
+            original_neural = self.raytracer.settings['neural_denoising']
+            
+            for scene_name in scenes:
+                self.raytracer.load_scene(scene_name)
+                obj_count = self.raytracer.get_object_count()
+                print(f"\n=== Testing scene: {scene_name} ===\n")
+                for (bvh, adaptive, subsample, neural) in combos:
+                    if self.stopped:
+                        return
+                    
+                    # Preskočíme kombináciu, ak BVH vypnuté a scéna má priveľa objektov
+                    if not bvh and obj_count > self.MAX_OBJECTS_FOR_NO_BVH:
+                        print(f"\n  Skipping: BVH={bvh} (scene has {obj_count} objects > {self.MAX_OBJECTS_FOR_NO_BVH})\n")
+                        continue
+                    
+                    self.raytracer.set_bvh_enabled(bvh)
+                    self.raytracer.set_adaptive_supersampling(adaptive)
+                    self.raytracer.set_subsampling(subsample)
+                    self.raytracer.set_neural_denoising(neural)
+
+                    print(f"  Running: BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}")
+
+                    comb_str = f"BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}"
+                    self.current_test.emit(scene_name, bvh, adaptive, subsample, neural, current+1, total)
+                    
+                    start = time.time()
+                    self.raytracer.render_state.set_mode(RenderMode.RAYTRACING)
+                    self.raytracer.restart_rendering()
+                    while (self.raytracer.render_state.current_mode == RenderMode.RAYTRACING 
+                           and self.raytracer.total_samples < self.raytracer.settings['max_samples']):
+                        time.sleep(0.05)
+                    elapsed = time.time() - start
+                    
+                    results.append({
+                        'scene': scene_name,
+                        'bvh': bvh,
+                        'adaptive': adaptive,
+                        'subsampling': subsample,
+                        'neural': neural,
+                        'time': elapsed,
+                        'samples': self.raytracer.total_samples
+                    })
+                    current += 1
+                    self.progress.emit(current, total)
+            
+            self.raytracer.set_bvh_enabled(original_bvh)
+            self.raytracer.set_adaptive_supersampling(original_adaptive)
+            self.raytracer.set_subsampling(original_subsample)
+            self.raytracer.set_neural_denoising(original_neural)
+            
+            import csv
+            csv_path = 'benchmark_results.csv'
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=['scene','bvh','adaptive','subsampling','neural','time','samples'])
+                writer.writeheader()
+                writer.writerows(results)
+            
+            self.finished.emit(csv_path)
+            
+        except Exception as e:
+            self.error.emit(str(e))
+    
+    def stop(self):
+        self.stopped = True
+
+
 
 
 class RayTracerInteraction:
@@ -890,6 +1058,10 @@ class RayTracerInteraction:
             'move_speed': 0.3,
             'camera_move_speed': 0.1,
             'camera_rotate_speed': 0.5,
+            'bvh_enabled': True,
+            'adaptive_supersampling': False,
+            'subsampling': False,
+            'neural_denoising': False,
         }
         
         # Initialize components
@@ -924,6 +1096,12 @@ class RayTracerInteraction:
         self.camera_move_active = True
         self.camera_move_thread = threading.Thread(target=self._camera_move_worker, daemon=True)
         self.camera_move_thread.start()
+
+        self.scene_generator = SceneGenerator()
+        self.available_scenes = self.scene_generator.get_scene_names()
+        self.load_scene('simple')
+        
+        self.benchmark_runner = None
         
         print(f"✓ Initialized Interactive Ray Tracer ({width}x{height})")
         print("Controls:")
@@ -2066,3 +2244,117 @@ class RayTracerInteraction:
         self.camera_move_active = False
         if self.camera_move_thread:
             self.camera_move_thread.join(timeout=1.0)
+
+
+
+
+    # ==================== OPTIMIZATION METHODS ====================
+    
+    def set_bvh_enabled(self, enabled):
+        with self.render_lock:
+            self.settings['bvh_enabled'] = enabled
+            self.scene.use_bvh = enabled
+            
+            if enabled:
+                self.scene.build_bvh()   # Vytvoríme BVH pre aktuálnu scénu
+            
+            # Aktualizácia v C++ (aj keď scéna zostáva rovnaká, potrebujeme preniesť zmenu use_bvh)
+            self.ray_tracer.set_scene(self.scene)
+            
+            self.restart_rendering()
+    
+    def set_adaptive_supersampling(self, enabled):
+        self.settings['adaptive_supersampling'] = enabled
+        # TODO: implement in C++
+        self.restart_rendering()
+    
+    def set_subsampling(self, enabled):
+        self.settings['subsampling'] = enabled
+        # TODO: implement in C++
+        self.restart_rendering()
+    
+    def set_neural_denoising(self, enabled):
+        self.settings['neural_denoising'] = enabled
+        # TODO: implement in C++
+        self.restart_rendering()
+    
+    # ==================== DENOISER METHODS ====================
+    
+    def apply_denoisers_to_final(self):
+        """Apply selected denoisers to the final image"""
+        if self.accumulated_image is None:
+            return
+        
+        display_image = self._tone_map(self.accumulated_image, self.settings['exposure'])
+        enhanced_image = self._enhance_display(display_image) if self.settings['enhance_image'] else display_image
+        
+        denoised_images = {}
+        if self.settings['show_denoisers'] and self.settings['selected_denoisers']:
+            for method in self.settings['selected_denoisers']:
+                try:
+                    denoised_images[method] = self.denoiser.denoise(display_image, method)
+                except Exception as e:
+                    print(f"Denoising error: {e}")
+        
+        frame_data = {
+            'display': display_image,
+            'enhanced': enhanced_image,
+            'denoised': denoised_images,
+            'samples': self.total_samples,
+            'render_time': 0.0,
+            'mode': 'raytracing',
+            'is_raytracing': True
+        }
+        self.frame_queue.put(frame_data)
+    
+    # ==================== SCENE METHODS ====================
+    
+    def load_scene(self, scene_name):
+        with self.render_lock:
+            new_scene = self.scene_generator.create_scene(scene_name, self.texture_manager)
+            if new_scene is not None:
+                self.scene = new_scene
+                
+                # Ak je BVH zapnutý, vytvoríme ho
+                if self.settings['bvh_enabled']:
+                    self.scene.build_bvh()
+                else:
+                    self.scene.use_bvh = False
+                
+                # Aktualizácia C++ ray tracera a renderera
+                self.ray_tracer.set_scene(self.scene)
+                self.object_dragger.scene = self.scene # Ensure object dragger uses the new scene
+                self.renderer.scene = self.scene   # pre wireframe/silhouette
+                
+                self.restart_rendering()
+                return True
+            return False
+    
+    def get_available_scenes(self):
+        return self.scene_generator.get_scene_names()
+    
+    # ==================== BENCHMARK METHODS ====================
+    
+    def run_benchmarks(self):
+        self.benchmark_runner = BenchmarkRunner(self)
+        self.benchmark_runner.progress.connect(self._benchmark_progress)
+        self.benchmark_runner.finished.connect(self._benchmark_finished)
+        self.benchmark_runner.error.connect(self._benchmark_error)
+        self.benchmark_runner.current_test.connect(self._benchmark_current_test)
+        self.benchmark_runner.start()
+    
+    def _benchmark_progress(self, current, total):
+        if self._gui:
+            self._gui.update_benchmark_progress(current, total)
+    
+    def _benchmark_finished(self, csv_path):
+        if self._gui:
+            self._gui.benchmark_finished(csv_path)
+    
+    def _benchmark_error(self, error_msg):
+        if self._gui:
+            self._gui.benchmark_error(error_msg)
+
+    def _benchmark_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
+        if self._gui:
+            self._gui.update_current_test(scene, bvh, adaptive, subsample, neural, current, total)

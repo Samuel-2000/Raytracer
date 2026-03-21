@@ -5,10 +5,11 @@ class Denoiser:
     """Denoising algorithms"""
     
     def __init__(self):
-        self.available_methods = ['bilateral', 'nlmeans', 'gaussian', 'median']
+        self.available_methods = ['bilateral', 'nlmeans', 'gaussian', 'median', 'neural']
     
     def denoise(self, image: np.ndarray, method: str = 'bilateral', **kwargs) -> np.ndarray:
         """Apply denoising to image"""
+        # Vstup je v rozsahu [0,1], prevod na uint8
         image_uint8 = (np.clip(image, 0, 1) * 255).astype(np.uint8)
         
         if method == 'bilateral':
@@ -19,6 +20,8 @@ class Denoiser:
             return self._gaussian_denoise(image_uint8, **kwargs)
         elif method == 'median':
             return self._median_denoise(image_uint8, **kwargs)
+        elif method == 'neural':
+            return self._neural_denoise(image_uint8, **kwargs)
         else:
             raise ValueError(f"Unknown denoising method: {method}")
     
@@ -42,3 +45,12 @@ class Denoiser:
     def _median_denoise(self, image: np.ndarray, kernel_size: int = 5) -> np.ndarray:
         denoised = cv2.medianBlur(image, kernel_size)
         return denoised.astype(np.float32) / 255.0
+    
+    def _neural_denoise(self, image: np.ndarray, **kwargs) -> np.ndarray:
+        """
+        Neural network denoising.
+        TODO: Implement actual neural network inference (e.g., OpenCV DNN).
+        """
+        # Placeholder: return original image
+        print("Neural denoising not implemented yet, returning original image.")
+        return image.astype(np.float32) / 255.0

@@ -288,20 +288,23 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
         float roughness = sample_roughness(rec);
         
         double continue_probability = 0.8;
-        if (depth < 3 || thread_local_dis(thread_local_gen) < continue_probability) {
+        // Number of bounces already taken
+        int bounces_taken = max_depth - depth;
+        // Always trace first 3 bounces, otherwise apply Russian roulette
+        if (bounces_taken < 3 || thread_local_dis(thread_local_gen) < continue_probability) {
+            Vector3 color;
             if (thread_local_dis(thread_local_gen) < rec.metallic) {
                 Vector3 reflected = reflect(ray.direction.normalize(), rec.normal);
                 Vector3 random_scatter = random_in_unit_sphere() * roughness;
                 Ray scattered(rec.point, reflected + random_scatter);
-                Vector3 traced_color = trace_ray(scattered, depth - 1, max_depth);
-                return emitted + (traced_color * albedo);
-            }
-            else {
+                color = trace_ray(scattered, depth - 1, max_depth);
+            } else {
                 Vector3 target = rec.point + rec.normal + random_in_hemisphere(rec.normal);
                 Ray scattered(rec.point, target - rec.point);
-                Vector3 traced_color = trace_ray(scattered, depth - 1, max_depth);
-                return emitted + (traced_color * albedo);
+                color = trace_ray(scattered, depth - 1, max_depth);
             }
+            // Divide by probability to keep unbiased
+            return emitted + (color * albedo) / continue_probability;
         }
         return emitted;
     }
@@ -309,7 +312,6 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     if (scene.skybox) {
         return scene.skybox->get_color(ray.direction);
     }
-
     
     return scene.background_color;
 }
@@ -324,6 +326,21 @@ void RayTracer::move_camera(const Vector3& delta) {
 }
 
 std::vector<double> RayTracer::render(int width, int height, int samples_per_pixel, int max_depth) {
+
+    // Adaptive supersampling - TODO
+    // Reference: Woo et al., "Adaptive Supersampling for Ray Tracing" (1997)
+    //            Kajiya, "The Rendering Equation" (1986)
+    // Implementácia: po nasnímaní vzoriek detegovať hrany (napr. pomocou rozdielov farieb)
+    // a v miestach s vysokým kontrastom pridať ďalšie vzorky.
+
+    // Subsampling - TODO
+    // Implementácia: vykresliť s nižším rozlíšením (napr. polovičným) a potom upscalovať
+    // pomocou bilineárnej alebo bikubickej interpolácie. Ušetrí čas pri interakcii.
+
+    // Neural denoising - TODO
+    // Po dokončení vykreslenia zavolať externú knižnicu na vyhladenie šumu.
+    // Literatúra: K. Z. et al., "Neural Denoising for Ray Tracing" (2017)
+
     std::vector<double> image_data(width * height * 3);
     camera.aspect_ratio = static_cast<double>(width) / height;
     

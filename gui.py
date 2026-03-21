@@ -3,7 +3,8 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QCheckBox, QComboBox, QLabel, QPushButton,
                              QTabWidget, QSplitter, QProgressBar, QSpinBox, QDoubleSpinBox,
-                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QGridLayout, QDialog)
+                             QColorDialog, QLineEdit, QFormLayout, QScrollArea, QFileDialog, 
+                             QGridLayout, QDialog, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QKeyEvent, QIntValidator
 import cv2
@@ -66,24 +67,72 @@ class ImageDisplay(QLabel):
         self.dragging = False
         self.drag_button = None
         self.last_pos = None
+
+        # Zoom atribúty
+        self.zoom_factor = 1.0
+        self.original_pixmap = None  # Uložíme pôvodný QPixmap
+        self.original_image_array = None  # Uložíme pôvodné numpy pole (pre prípad potreby)
     
     def set_image(self, image_array):
         """Set image from numpy array"""
         if image_array is None or image_array.size == 0:
             return
         
+        # Ulož pôvodné dáta
+        self.original_image_array = image_array
+        
         height, width, channel = image_array.shape
         bytes_per_line = 3 * width
         
         image_8bit = (np.clip(image_array, 0, 1) * 255).astype(np.uint8)
         
-        # Remove or modify this line:
-        # image_rgb = cv2.cvtColor(image_8bit, cv2.COLOR_BGR2RGB)
-        
-        # Use image_8bit directly if it's already RGB:
+        # Vytvor QImage a QPixmap
         q_image = QImage(image_8bit.data, width, height, bytes_per_line, QImage.Format_RGB888)
-        self.setPixmap(QPixmap.fromImage(q_image))
+        self.original_pixmap = QPixmap.fromImage(q_image)
+        
+        # Aplikuj aktuálny zoom
+        self._update_display()
     
+
+    def _update_display(self):
+        """Apply current zoom factor and display"""
+        if self.original_pixmap is None:
+            return
+        
+        # Vypočítaj novú veľkosť so zachovaním pomeru strán
+        new_width = int(self.original_pixmap.width() * self.zoom_factor)
+        new_height = int(self.original_pixmap.height() * self.zoom_factor)
+        
+        # Zabráň príliš veľkému zoomu, aby sa nepreťažila pamäť
+        new_width = min(new_width, 38400)
+        new_height = min(new_height, 21600)
+        
+        # Scaling
+        scaled_pixmap = self.original_pixmap.scaled(
+            new_width, new_height,
+            Qt.KeepAspectRatio,
+            Qt.FastTransformation
+        )
+        self.setPixmap(scaled_pixmap)
+    
+    def zoom_in(self):
+        """Increase zoom factor"""
+        self.zoom_factor *= 2.0
+        self.zoom_factor = min(self.zoom_factor, 16.0)  # Maximálny zoom 4x
+        self._update_display()
+    
+    def zoom_out(self):
+        """Decrease zoom factor"""
+        self.zoom_factor /= 2.0
+        self.zoom_factor = max(self.zoom_factor, 0.25)  # Minimálny zoom 0.25x
+        self._update_display()
+    
+    def reset_zoom(self):
+        """Reset to normal zoom"""
+        self.zoom_factor = 1.0
+        self._update_display()
+
+
     def mousePressEvent(self, event):
         button = event.button()
         if button in [Qt.LeftButton, Qt.RightButton]:
@@ -150,15 +199,16 @@ class ScrollableTabbedControlPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         
-        # Create tabs - ADD NEW TABS
+        # Create tabs
         self.render_tab = self.create_render_tab()
         self.scene_tab = self.create_scene_tab()
         self.camera_tab = self.create_camera_tab()
         self.object_tab = self.create_object_tab()
         self.material_tab = self.create_material_tab()
-        self.texture_tab = self.create_texture_tab()      # NEW
-        self.skybox_tab = self.create_skybox_tab()        # NEW
+        self.texture_tab = self.create_texture_tab()
+        self.skybox_tab = self.create_skybox_tab()
         self.denoiser_tab = self.create_denoiser_tab()
+        self.optimization_tab = self.create_optimization_tab()
         
         # Add tabs
         self.tabs.addTab(self.render_tab, "Render")
@@ -166,9 +216,10 @@ class ScrollableTabbedControlPanel(QWidget):
         self.tabs.addTab(self.camera_tab, "Camera")
         self.tabs.addTab(self.object_tab, "Object")
         self.tabs.addTab(self.material_tab, "Material")
-        self.tabs.addTab(self.texture_tab, "Texture")     # NEW
-        self.tabs.addTab(self.skybox_tab, "Skybox")       # NEW
+        self.tabs.addTab(self.texture_tab, "Texture")
+        self.tabs.addTab(self.skybox_tab, "Skybox")
         self.tabs.addTab(self.denoiser_tab, "Denoiser")
+        self.tabs.addTab(self.optimization_tab, "Optimization")
         
         layout.addWidget(self.tabs)
         self.setLayout(layout)
@@ -276,7 +327,7 @@ class ScrollableTabbedControlPanel(QWidget):
         remove_object_btn.clicked.connect(self.remove_object)
         scene_layout.addWidget(remove_object_btn)
         
-        # NEW: Toggle floor button
+        # Toggle floor button
         floor_group = QGroupBox("Floor")
         floor_layout = QHBoxLayout()
         
@@ -871,11 +922,9 @@ class ScrollableTabbedControlPanel(QWidget):
         return tab
     
     def create_denoiser_tab(self):
-        """Create denoiser controls tab"""
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Denoiser settings group
         denoiser_group = QGroupBox("Denoiser Settings")
         denoiser_layout = QVBoxLayout()
         
@@ -907,6 +956,12 @@ class ScrollableTabbedControlPanel(QWidget):
         self.denoiser_median.toggled.connect(self.on_denoiser_selection_changed)
         denoiser_methods_layout.addWidget(self.denoiser_median)
         
+        # NOVÝ CHECKBOX pre neurónový denoising
+        self.denoiser_neural = QCheckBox("Neural")
+        self.denoiser_neural.setChecked('neural' in self.raytracer.settings['selected_denoisers'])
+        self.denoiser_neural.toggled.connect(self.on_denoiser_selection_changed)
+        denoiser_methods_layout.addWidget(self.denoiser_neural)
+        
         denoiser_layout.addLayout(denoiser_methods_layout)
         denoiser_group.setLayout(denoiser_layout)
         layout.addWidget(denoiser_group)
@@ -915,7 +970,107 @@ class ScrollableTabbedControlPanel(QWidget):
         tab.setLayout(layout)
         return tab
     
-    # ==================== NEW EVENT HANDLERS ====================
+
+    def create_optimization_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Skupina techník
+        tech_group = QGroupBox("Optimization Techniques")
+        tech_layout = QVBoxLayout()
+        
+        self.bvh_checkbox = QCheckBox("BVH (Bounding Volume Hierarchy)")
+        self.bvh_checkbox.setChecked(self.raytracer.settings.get('bvh_enabled', True))
+        self.bvh_checkbox.toggled.connect(self.on_bvh_toggled)
+        tech_layout.addWidget(self.bvh_checkbox)
+        
+        self.adaptive_ss_checkbox = QCheckBox("Adaptive Supersampling")
+        self.adaptive_ss_checkbox.setChecked(self.raytracer.settings.get('adaptive_supersampling', False))
+        self.adaptive_ss_checkbox.toggled.connect(self.on_adaptive_ss_toggled)
+        tech_layout.addWidget(self.adaptive_ss_checkbox)
+        
+        self.subsampling_checkbox = QCheckBox("Subsampling")
+        self.subsampling_checkbox.setChecked(self.raytracer.settings.get('subsampling', False))
+        self.subsampling_checkbox.toggled.connect(self.on_subsampling_toggled)
+        tech_layout.addWidget(self.subsampling_checkbox)
+        
+        self.neural_denoise_checkbox = QCheckBox("Neural Denoising")
+        self.neural_denoise_checkbox.setChecked(self.raytracer.settings.get('neural_denoising', False))
+        self.neural_denoise_checkbox.toggled.connect(self.on_neural_denoise_toggled)
+        tech_layout.addWidget(self.neural_denoise_checkbox)
+        
+        tech_group.setLayout(tech_layout)
+        layout.addWidget(tech_group)
+        
+        # Skupina pre výber scény
+        scene_group = QGroupBox("Test Scenes")
+        scene_layout = QVBoxLayout()
+        
+        scene_sel_layout = QHBoxLayout()
+        scene_sel_layout.addWidget(QLabel("Scene:"))
+        self.scene_select = QComboBox()
+        for scene_name in self.raytracer.get_available_scenes():
+            self.scene_select.addItem(scene_name)
+        scene_sel_layout.addWidget(self.scene_select)
+        
+        self.apply_scene_btn = QPushButton("Apply Scene")
+        self.apply_scene_btn.clicked.connect(self.on_apply_scene)
+        scene_sel_layout.addWidget(self.apply_scene_btn)
+        scene_layout.addLayout(scene_sel_layout)
+        
+        scene_group.setLayout(scene_layout)
+        layout.addWidget(scene_group)
+        
+        # Benchmark
+        bench_group = QGroupBox("Benchmark")
+        bench_layout = QVBoxLayout()
+        
+        self.run_benchmark_btn = QPushButton("Run Benchmarks (all combinations)")
+        self.run_benchmark_btn.clicked.connect(self.on_run_benchmarks)
+        bench_layout.addWidget(self.run_benchmark_btn)
+        
+        self.benchmark_progress = QProgressBar()
+        self.benchmark_progress.setVisible(False)
+        bench_layout.addWidget(self.benchmark_progress)
+        
+        bench_group.setLayout(bench_layout)
+        layout.addWidget(bench_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+
+    # ==================== EVENT HANDLERS ====================
+
+    def on_bvh_toggled(self, enabled):
+        self.raytracer.set_bvh_enabled(enabled)
+
+    def on_adaptive_ss_toggled(self, enabled):
+        self.raytracer.set_adaptive_supersampling(enabled)
+
+    def on_subsampling_toggled(self, enabled):
+        self.raytracer.set_subsampling(enabled)
+
+    def on_neural_denoise_toggled(self, enabled):
+        self.raytracer.set_neural_denoising(enabled)
+
+    def on_apply_scene(self):
+        scene_name = self.scene_select.currentText()
+        self.raytracer.load_scene(scene_name)
+
+    def on_run_benchmarks(self):
+        self.run_benchmark_btn.setEnabled(False)
+        self.benchmark_progress.setVisible(True)
+        self.benchmark_progress.setRange(0, 0)
+        self.raytracer.run_benchmarks()
+        if self.raytracer._gui:
+            self.raytracer._gui.set_optimization_controls_enabled(False)
+
+    def set_optimization_checks(self, bvh, adaptive, subsample, neural):
+        self.bvh_checkbox.setChecked(bvh)
+        self.adaptive_ss_checkbox.setChecked(adaptive)
+        self.subsampling_checkbox.setChecked(subsample)
+        self.neural_denoise_checkbox.setChecked(neural)
     
     def on_texture_type_changed(self, texture_type):
         """Handle texture type change - update parameter controls"""
@@ -1138,7 +1293,7 @@ class ScrollableTabbedControlPanel(QWidget):
         preset_name = self.material_preset.currentText()
         self.raytracer.apply_material_preset(preset_name)
     
-    # ==================== NEW FLOOR TOGGLE ====================
+    # ==================== FLOOR TOGGLE ====================
     
     def toggle_floor(self):
         """Toggle floor visibility"""
@@ -1398,7 +1553,6 @@ class ScrollableTabbedControlPanel(QWidget):
         self.raytracer.settings['show_denoisers'] = checked
     
     def on_denoiser_selection_changed(self):
-        """Handle denoiser selection changes"""
         selected = []
         if self.denoiser_bilateral.isChecked():
             selected.append('bilateral')
@@ -1408,8 +1562,13 @@ class ScrollableTabbedControlPanel(QWidget):
             selected.append('gaussian')
         if self.denoiser_median.isChecked():
             selected.append('median')
+        if self.denoiser_neural.isChecked():
+            selected.append('neural')
         
         self.raytracer.settings['selected_denoisers'] = selected
+        # Ak je renderovanie dokončené, aktualizujeme obrázok
+        if self.raytracer.total_samples >= self.raytracer.settings['max_samples']:
+            self.raytracer.apply_denoisers_to_final()
     
     # ------------------------------------------------------------------
     # Object Management Methods
@@ -2273,6 +2432,18 @@ class GUI(QMainWindow):
                 self.toggle_recording()
             event.accept()
             return
+            
+
+        if key == Qt.Key_Plus or key == Qt.Key_Equal:
+            self.main_display.zoom_in()
+            event.accept()
+            return
+        
+        if key == Qt.Key_Minus:
+            self.main_display.zoom_out()
+            event.accept()
+            return
+
         
         # Camera movement keys
         if key in self.camera_keys:
@@ -2386,6 +2557,65 @@ class GUI(QMainWindow):
             self.render_thread.stop()
         self.raytracer.stop_rendering()
         event.accept()
+
+
+    def update_benchmark_progress(self, current, total):
+        self.control_panel.benchmark_progress.setMaximum(total)
+        self.control_panel.benchmark_progress.setValue(current)
+
+    def benchmark_finished(self, csv_path):
+        self.control_panel.run_benchmark_btn.setEnabled(True)
+        self.control_panel.benchmark_progress.setVisible(False)
+        self.set_optimization_controls_enabled(True)
+        QMessageBox.information(self, "Benchmark Complete", f"Results saved to:\n{csv_path}")
+
+    def benchmark_error(self, error_msg):
+        self.control_panel.run_benchmark_btn.setEnabled(True)
+        self.control_panel.benchmark_progress.setVisible(False)
+        self.set_optimization_controls_enabled(True)
+        QMessageBox.critical(self, "Benchmark Error", error_msg)
+
+    def update_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
+        self.status_label.setText(f"Benchmark: {scene} - BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural} ({current}/{total})")
+        self.control_panel.set_optimization_checks(bvh, adaptive, subsample, neural)
+
+    def set_optimization_controls_enabled(self, enabled):
+        panel = self.control_panel
+        panel.bvh_checkbox.setEnabled(enabled)
+        panel.adaptive_ss_checkbox.setEnabled(enabled)
+        panel.subsampling_checkbox.setEnabled(enabled)
+        panel.neural_denoise_checkbox.setEnabled(enabled)
+        panel.scene_select.setEnabled(enabled)
+        panel.apply_scene_btn.setEnabled(enabled)
+        panel.run_benchmark_btn.setEnabled(enabled)
+
+
+
+
+
+    # Úprava denoiserov – volanie apply_denoisers_to_final po zmene
+    def on_show_denoisers_changed(self, checked):
+        self.raytracer.settings['show_denoisers'] = checked
+        # Ak je renderovanie dokončené, aktualizujeme obrázok
+        if self.raytracer.total_samples >= self.raytracer.settings['max_samples']:
+            self.raytracer.apply_denoisers_to_final()
+
+    def on_denoiser_selection_changed(self):
+        selected = []
+        if self.denoiser_bilateral.isChecked():
+            selected.append('bilateral')
+        if self.denoiser_nlmeans.isChecked():
+            selected.append('nlmeans')
+        if self.denoiser_gaussian.isChecked():
+            selected.append('gaussian')
+        if self.denoiser_median.isChecked():
+            selected.append('median')
+        
+        self.raytracer.settings['selected_denoisers'] = selected
+        # Ak je renderovanie dokončené, aktualizujeme obrázok
+        if self.raytracer.total_samples >= self.raytracer.settings['max_samples']:
+            self.raytracer.apply_denoisers_to_final()
+
 
 def main():
     app = QApplication(sys.argv)
