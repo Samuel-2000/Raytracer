@@ -24,12 +24,12 @@ bool AABB::hit(const Ray& ray, double tmin, double tmax) const {
     return true;
 }
 
-int AABB::hit_packet(const RayPacket& packet, double tmin, double tmax, int active_mask) const {
+int AABB::hit_packet(const RayPacket& packet, double tmin, double tmax_arr[4], int active_mask) const {
     int result = 0;
     for (int i = 0; i < 4; ++i) {
         if (active_mask & (1 << i)) {
             Ray r(packet.origins[i], packet.directions[i]);
-            if (hit(r, tmin, tmax)) result |= (1 << i);
+            if (hit(r, tmin, tmax_arr[i])) result |= (1 << i);
         }
     }
     return result;
@@ -56,7 +56,7 @@ BVHNode::~BVHNode() { delete left; delete right; }
 #ifdef __AVX2__
 #include <immintrin.h>
 
-// SIMD kernel: test packet of 4 rays against one sphere, update t_max and hit records
+// SIMD kernel: test packet of 4 rays against one sphere, update t_max_arr and hit records
 static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere,
                                    double t_min, double t_max_arr[4], HitRecord rec[4],
                                    int active_mask) {
@@ -83,7 +83,7 @@ static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere
     __m256d ocy = _mm256_sub_pd(oy, cy);
     __m256d ocz = _mm256_sub_pd(oz, cz);
 
-    // b = dot(oc, dir)   (actually half_b = dot(oc, dir))
+    // half_b = dot(oc, dir)
     __m256d half_b = _mm256_add_pd(_mm256_mul_pd(ocx, dx),
                                    _mm256_add_pd(_mm256_mul_pd(ocy, dy),
                                                  _mm256_mul_pd(ocz, dz)));
@@ -101,9 +101,7 @@ static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere
     if (mask == 0) return 0;
 
     __m256d sqrt_disc = _mm256_sqrt_pd(disc);
-    // First root: t1 = -half_b - sqrt_disc
     __m256d t1 = _mm256_sub_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
-    // Second root: t2 = -half_b + sqrt_disc
     __m256d t2 = _mm256_add_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
 
     double t1_vals[4], t2_vals[4];
@@ -114,7 +112,6 @@ static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere
     for (int i = 0; i < 4; ++i) {
         if (!(mask & (1 << i))) continue;
 
-        // Choose the smallest positive root that is > t_min
         double t = 1e20;
         if (t1_vals[i] > t_min && t1_vals[i] < t_max_arr[i]) t = t1_vals[i];
         if (t2_vals[i] > t_min && t2_vals[i] < t_max_arr[i] && t2_vals[i] < t) t = t2_vals[i];
@@ -135,35 +132,34 @@ static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere
 }
 #endif
 
-int BVHNode::hit_packet(const RayPacket& packet, double t_min, double t_max,
+int BVHNode::hit_packet(const RayPacket& packet, double t_min, double t_max_arr[4],
                         HitRecord rec[4], const std::vector<Sphere>& scene_spheres,
                         bool use_simd, int active_mask) const {
-    // AABB test for all active rays
-    int box_mask = box.hit_packet(packet, t_min, t_max, active_mask);
+    int box_mask = box.hit_packet(packet, t_min, t_max_arr, active_mask);
     if (box_mask == 0) return 0;
-    
+
     if (is_leaf) {
 #ifdef __AVX2__
         if (use_simd && sphere_indices.size() >= 4) {
-            double t_max_arr[4] = {t_max, t_max, t_max, t_max};
             int result_mask = 0;
             for (int idx : sphere_indices) {
                 int hit = packet_sphere_intersect(packet, scene_spheres[idx],
                                                   t_min, t_max_arr, rec, box_mask);
                 result_mask |= hit;
-                if ((result_mask & box_mask) == box_mask) break; // all active rays hit
+                // No early break – must test all spheres to guarantee closest hit
             }
             return result_mask;
         }
 #endif
-        // Scalar leaf: test each sphere against each active ray
+        // Scalar leaf
         int result_mask = 0;
         for (int idx : sphere_indices) {
             const Sphere& sphere = scene_spheres[idx];
             for (int i = 0; i < 4; ++i) {
                 if (box_mask & (1 << i)) {
                     Ray r(packet.origins[i], packet.directions[i]);
-                    if (sphere.hit(r, t_min, t_max, rec[i])) {
+                    if (sphere.hit(r, t_min, t_max_arr[i], rec[i])) {
+                        t_max_arr[i] = rec[i].t;
                         result_mask |= (1 << i);
                     }
                 }
@@ -171,10 +167,17 @@ int BVHNode::hit_packet(const RayPacket& packet, double t_min, double t_max,
         }
         return result_mask;
     }
-    
-    // Internal node: recurse
-    int left_mask = left ? left->hit_packet(packet, t_min, t_max, rec, scene_spheres, use_simd, box_mask) : 0;
-    int right_mask = right ? right->hit_packet(packet, t_min, t_max, rec, scene_spheres, use_simd, box_mask & ~left_mask) : 0;
+
+    // Internal node: test both children for all active rays, t_max_arr handles closeness
+    int left_mask = 0, right_mask = 0;
+    if (left) {
+        left_mask = left->hit_packet(packet, t_min, t_max_arr, rec,
+                                     scene_spheres, use_simd, box_mask);
+    }
+    if (right) {
+        right_mask = right->hit_packet(packet, t_min, t_max_arr, rec,
+                                       scene_spheres, use_simd, box_mask);
+    }
     return left_mask | right_mask;
 }
 
@@ -306,9 +309,9 @@ bool BVH::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
     return root->hit(ray, t_min, t_max, rec, scene_spheres, use_simd);
 }
 
-int BVH::hit_packet(const RayPacket& packet, double t_min, double t_max,
+int BVH::hit_packet(const RayPacket& packet, double t_min, double t_max_arr[4],
                     HitRecord rec[4], const std::vector<Sphere>& scene_spheres,
                     bool use_simd, int active_mask) const {
     if (!root) return 0;
-    return root->hit_packet(packet, t_min, t_max, rec, scene_spheres, use_simd, active_mask);
+    return root->hit_packet(packet, t_min, t_max_arr, rec, scene_spheres, use_simd, active_mask);
 }

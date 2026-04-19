@@ -1,4 +1,4 @@
-// raytracer_core.cpp - FIXED SIMD packet alignment
+// raytracer_core.cpp - FIXED SIMD packet traversal
 #define _USE_MATH_DEFINES
 #include "raytracer_core.h"
 #include "bvh.h"
@@ -113,13 +113,13 @@ bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) cons
 }
 
 #ifdef __AVX2__
-static int linear_hit_packet_simd(const RayPacket& packet, double t_min, double t_max,
-                                  const std::vector<Sphere>& spheres, HitRecord rec[4],
-                                  int active_mask) {
+static int linear_hit_packet_simd(const RayPacket& packet, double t_min,
+                                  double t_max_arr[4],
+                                  const std::vector<Sphere>& spheres,
+                                  HitRecord rec[4], int active_mask) {
     int result_mask = 0;
-    double t_max_arr[4] = {t_max, t_max, t_max, t_max};
     for (const auto& sphere : spheres) {
-        if ((result_mask & active_mask) == active_mask) break;
+        // No early break – must test every sphere to find closest hit
 
         __m256d cx = _mm256_set1_pd(sphere.center.x);
         __m256d cy = _mm256_set1_pd(sphere.center.y);
@@ -188,23 +188,27 @@ static int linear_hit_packet_simd(const RayPacket& packet, double t_min, double 
 }
 #endif
 
-int Scene::hit_packet(const RayPacket& packet, HitRecord rec[4], int active_mask) const {
+int Scene::hit_packet(const RayPacket& packet, HitRecord rec[4],
+                      double t_max_arr[4], int active_mask) const {
     // Branch 1: SIMD + BVH
     if (simd_ray_hit && use_bvh && bvh != nullptr) {
-        return bvh->hit_packet(packet, 0.001, 1e10, rec, spheres, true, active_mask);
+        return bvh->hit_packet(packet, 0.001, t_max_arr, rec, spheres, true, active_mask);
     }
 #ifdef __AVX2__
     // Branch 2: SIMD + linear search (BVH off, SIMD on)
     if (simd_ray_hit) {
-        return linear_hit_packet_simd(packet, 0.001, 1e10, spheres, rec, active_mask);
+        return linear_hit_packet_simd(packet, 0.001, t_max_arr, spheres, rec, active_mask);
     }
 #endif
-    // Branch 3: scalar fallback – only process active rays
+    // Branch 3: scalar fallback – process each active ray individually
     int mask = 0;
     for (int i = 0; i < 4; ++i) {
         if (!(active_mask & (1 << i))) continue;
         Ray r(packet.origins[i], packet.directions[i]);
-        if (hit(r, 0.001, 1e10, rec[i])) mask |= (1 << i);
+        if (hit(r, 0.001, t_max_arr[i], rec[i])) {
+            t_max_arr[i] = rec[i].t;
+            mask |= (1 << i);
+        }
     }
     return mask;
 }
@@ -320,7 +324,8 @@ void RayTracer::trace_packet(const RayPacket& packet, Vector3 colors[4], int dep
     }
 
     HitRecord rec[4];
-    int hit_mask = scene.hit_packet(packet, rec, active_mask);
+    double t_max_arr[4] = {1e10, 1e10, 1e10, 1e10};
+    int hit_mask = scene.hit_packet(packet, rec, t_max_arr, active_mask);
 
     for (int i = 0; i < 4; ++i) {
         if (!(active_mask & (1 << i))) {
