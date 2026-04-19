@@ -1,4 +1,4 @@
-// raytracer_core.cpp - UPDATED TO USE Material STRUCT
+// raytracer_core.cpp - FIXED SIMD packet alignment
 #define _USE_MATH_DEFINES
 #include "raytracer_core.h"
 #include "bvh.h"
@@ -113,16 +113,19 @@ bool Scene::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) cons
 }
 
 #ifdef __AVX2__
-// SIMD linear packet search (no BVH)
 static int linear_hit_packet_simd(const RayPacket& packet, double t_min, double t_max,
-                                  const std::vector<Sphere>& spheres, HitRecord rec[4]) {
+                                  const std::vector<Sphere>& spheres, HitRecord rec[4],
+                                  int active_mask) {
     int result_mask = 0;
     double t_max_arr[4] = {t_max, t_max, t_max, t_max};
     for (const auto& sphere : spheres) {
+        if ((result_mask & active_mask) == active_mask) break;
+
         __m256d cx = _mm256_set1_pd(sphere.center.x);
         __m256d cy = _mm256_set1_pd(sphere.center.y);
         __m256d cz = _mm256_set1_pd(sphere.center.z);
         __m256d r = _mm256_set1_pd(sphere.radius);
+
         __m256d ox = _mm256_set_pd(packet.origins[3].x, packet.origins[2].x,
                                    packet.origins[1].x, packet.origins[0].x);
         __m256d oy = _mm256_set_pd(packet.origins[3].y, packet.origins[2].y,
@@ -135,9 +138,11 @@ static int linear_hit_packet_simd(const RayPacket& packet, double t_min, double 
                                    packet.directions[1].y, packet.directions[0].y);
         __m256d dz = _mm256_set_pd(packet.directions[3].z, packet.directions[2].z,
                                    packet.directions[1].z, packet.directions[0].z);
+
         __m256d ocx = _mm256_sub_pd(ox, cx);
         __m256d ocy = _mm256_sub_pd(oy, cy);
         __m256d ocz = _mm256_sub_pd(oz, cz);
+
         __m256d half_b = _mm256_add_pd(_mm256_mul_pd(ocx, dx),
                                        _mm256_add_pd(_mm256_mul_pd(ocy, dy),
                                                      _mm256_mul_pd(ocz, dz)));
@@ -148,48 +153,56 @@ static int linear_hit_packet_simd(const RayPacket& packet, double t_min, double 
         __m256d disc = _mm256_sub_pd(_mm256_mul_pd(half_b, half_b), c);
         __m256d zero = _mm256_set1_pd(0.0);
         __m256d mask_ge = _mm256_cmp_pd(disc, zero, _CMP_GE_OQ);
-        int mask = _mm256_movemask_pd(mask_ge);
+        int mask = _mm256_movemask_pd(mask_ge) & active_mask;
         if (mask == 0) continue;
+
         __m256d sqrt_disc = _mm256_sqrt_pd(disc);
         __m256d t1 = _mm256_sub_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
-        double t_vals[4];
-        _mm256_store_pd(t_vals, t1);
+        __m256d t2 = _mm256_add_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
+
+        double t1_vals[4], t2_vals[4];
+        _mm256_storeu_pd(t1_vals, t1);
+        _mm256_storeu_pd(t2_vals, t2);
+
         for (int i = 0; i < 4; ++i) {
-            if (mask & (1 << i)) {
-                double t = t_vals[i];
-                if (t > t_min && t < t_max_arr[i]) {
-                    Ray ray(packet.origins[i], packet.directions[i]);
-                    HitRecord temp;
-                    if (sphere.hit(ray, t_min, t_max_arr[i], temp)) {
-                        if (temp.t < t_max_arr[i]) {
-                            t_max_arr[i] = temp.t;
-                            rec[i] = temp;
-                            result_mask |= (1 << i);
-                        }
+            if (!(mask & (1 << i))) continue;
+
+            double t = 1e20;
+            if (t1_vals[i] > t_min && t1_vals[i] < t_max_arr[i]) t = t1_vals[i];
+            if (t2_vals[i] > t_min && t2_vals[i] < t_max_arr[i] && t2_vals[i] < t) t = t2_vals[i];
+
+            if (t < t_max_arr[i]) {
+                Ray ray(packet.origins[i], packet.directions[i]);
+                HitRecord temp;
+                if (sphere.hit(ray, t_min, t_max_arr[i], temp)) {
+                    if (temp.t < t_max_arr[i]) {
+                        t_max_arr[i] = temp.t;
+                        rec[i] = temp;
+                        result_mask |= (1 << i);
                     }
                 }
             }
         }
-        if (result_mask == 0xF) break;
     }
     return result_mask;
 }
 #endif
 
-int Scene::hit_packet(const RayPacket& packet, HitRecord rec[4]) const {
+int Scene::hit_packet(const RayPacket& packet, HitRecord rec[4], int active_mask) const {
     // Branch 1: SIMD + BVH
     if (simd_ray_hit && use_bvh && bvh != nullptr) {
-        return bvh->hit_packet(packet, 0.001, 1e10, rec, spheres, true);
+        return bvh->hit_packet(packet, 0.001, 1e10, rec, spheres, true, active_mask);
     }
 #ifdef __AVX2__
     // Branch 2: SIMD + linear search (BVH off, SIMD on)
     if (simd_ray_hit) {
-        return linear_hit_packet_simd(packet, 0.001, 1e10, spheres, rec);
+        return linear_hit_packet_simd(packet, 0.001, 1e10, spheres, rec, active_mask);
     }
 #endif
-    // Branch 3: scalar fallback
+    // Branch 3: scalar fallback – only process active rays
     int mask = 0;
     for (int i = 0; i < 4; ++i) {
+        if (!(active_mask & (1 << i))) continue;
         Ray r(packet.origins[i], packet.directions[i]);
         if (hit(r, 0.001, 1e10, rec[i])) mask |= (1 << i);
     }
@@ -300,32 +313,33 @@ Vector3 RayTracer::trace_ray(const Ray& ray, int depth, int max_depth) {
     return scene.background_color;
 }
 
-void RayTracer::trace_packet(const RayPacket& packet, Vector3 colors[4], int depth, int max_depth) {
+void RayTracer::trace_packet(const RayPacket& packet, Vector3 colors[4], int depth, int max_depth, int active_mask) {
     if (depth <= 0) {
-        for (int i=0;i<4;i++) colors[i] = Vector3(0,0,0);
+        for (int i = 0; i < 4; ++i) colors[i] = Vector3(0,0,0);
         return;
     }
+
     HitRecord rec[4];
-    int hit_mask = scene.hit_packet(packet, rec);
-    if (hit_mask == 0) {
-        for (int i=0;i<4;i++) {
-            if (scene.skybox) colors[i] = scene.skybox->get_color(packet.directions[i]);
-            else colors[i] = scene.background_color;
+    int hit_mask = scene.hit_packet(packet, rec, active_mask);
+
+    for (int i = 0; i < 4; ++i) {
+        if (!(active_mask & (1 << i))) {
+            colors[i] = Vector3(0,0,0);
+            continue;
         }
-        return;
-    }
-    for (int i=0;i<4;i++) {
-        if (!(hit_mask & (1<<i))) {
-            if (scene.skybox) colors[i] = scene.skybox->get_color(packet.directions[i]);
-            else colors[i] = scene.background_color;
+        if (!(hit_mask & (1 << i))) {
+            if (scene.skybox)
+                colors[i] = scene.skybox->get_color(packet.directions[i]);
+            else
+                colors[i] = scene.background_color;
         } else {
             Vector3 emitted = rec[i].emission;
             Vector3 albedo = sample_albedo(rec[i]);
             float roughness = sample_roughness(rec[i]);
             double prob = 0.8;
             int bounces = max_depth - depth;
+            Vector3 color;
             if (bounces < 3 || thread_local_dis(thread_local_gen) < prob) {
-                Vector3 color;
                 if (thread_local_dis(thread_local_gen) < rec[i].metallic) {
                     Vector3 reflected = reflect(packet.directions[i].normalize(), rec[i].normal);
                     Vector3 scatter = random_in_unit_sphere() * roughness;
@@ -360,8 +374,10 @@ std::vector<double> RayTracer::render(int width, int height, int samples_per_pix
                 int j_end = std::min(j + PACKET_SIZE, tile_end_y);
                 for (int i = tile_x; i < tile_end_x; i += PACKET_SIZE) {
                     int i_end = std::min(i + PACKET_SIZE, tile_end_x);
-                    // Build packet origins and directions (up to 4 rays)
+                    
+                    // Build packet and active mask
                     RayPacket packet;
+                    int active_mask = 0;
                     int idx = 0;
                     for (int dy = 0; dy < j_end - j; ++dy) {
                         for (int dx = 0; dx < i_end - i; ++dx) {
@@ -370,24 +386,25 @@ std::vector<double> RayTracer::render(int width, int height, int samples_per_pix
                             Ray r = camera.get_ray(u, v);
                             packet.origins[idx] = r.origin;
                             packet.directions[idx] = r.direction;
+                            active_mask |= (1 << idx);
                             ++idx;
                         }
                     }
-                    // Fill missing rays with dummy (won't be used because mask will limit)
+                    // Fill remaining slots with dummy values (still needed for alignment)
                     while (idx < 4) {
                         packet.origins[idx] = Vector3(0,0,0);
                         packet.directions[idx] = Vector3(0,0,0);
                         ++idx;
                     }
-                    packet.t_min = 0.001;
-                    packet.t_max = 1e10;
                     
-                    // FIXED: Use Vector3 instead of Vector4
                     Vector3 acc_colors[4] = {Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0)};
                     for (int s = 0; s < samples_per_pixel; ++s) {
                         Vector3 colors[4];
-                        trace_packet(packet, colors, max_depth, max_depth);
-                        for (int r = 0; r < 4; ++r) acc_colors[r] = acc_colors[r] + colors[r];
+                        trace_packet(packet, colors, max_depth, max_depth, active_mask);
+                        for (int r = 0; r < 4; ++r) {
+                            if (active_mask & (1 << r))
+                                acc_colors[r] = acc_colors[r] + colors[r];
+                        }
                     }
                     idx = 0;
                     for (int dy = 0; dy < j_end - j; ++dy) {

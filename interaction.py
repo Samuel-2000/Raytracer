@@ -2313,12 +2313,14 @@ class RayTracerInteraction:
     def set_dynamic_bvh(self, enabled):
         self.settings['dynamic_bvh'] = enabled
         self.scene.dynamic_bvh = enabled   # sets the C++ member
+        self.ray_tracer.set_scene(self.scene)
         self.restart_rendering()
 
     # SIMD bvh ray hit (susedné paprsky pravdepodobne trafia rovnaký objekt)
     def set_SIMD_ray_hit(self, enabled):
         self.settings['SIMD_ray_hit'] = enabled
         self.scene.simd_ray_hit = enabled    # sets the C++ member
+        self.ray_tracer.set_scene(self.scene)
         self.restart_rendering()
 
 

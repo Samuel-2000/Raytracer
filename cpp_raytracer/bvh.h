@@ -58,6 +58,6 @@ public:
              const std::vector<Sphere>& scene_spheres, bool use_simd) const;
     int hit_packet(const RayPacket& packet, double t_min, double t_max,
                    HitRecord rec[4], const std::vector<Sphere>& scene_spheres,
-                   bool use_simd) const;
+                   bool use_simd, int active_mask = 0xF) const;
     int get_node_count() const { return node_count; }
 };

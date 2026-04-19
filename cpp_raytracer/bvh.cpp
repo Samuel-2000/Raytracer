@@ -58,12 +58,13 @@ BVHNode::~BVHNode() { delete left; delete right; }
 
 // SIMD kernel: test packet of 4 rays against one sphere, update t_max and hit records
 static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere,
-                                   double t_min, double t_max_arr[4], HitRecord rec[4]) {
+                                   double t_min, double t_max_arr[4], HitRecord rec[4],
+                                   int active_mask) {
     __m256d cx = _mm256_set1_pd(sphere.center.x);
     __m256d cy = _mm256_set1_pd(sphere.center.y);
     __m256d cz = _mm256_set1_pd(sphere.center.z);
     __m256d r = _mm256_set1_pd(sphere.radius);
-    
+
     __m256d ox = _mm256_set_pd(packet.origins[3].x, packet.origins[2].x,
                                packet.origins[1].x, packet.origins[0].x);
     __m256d oy = _mm256_set_pd(packet.origins[3].y, packet.origins[2].y,
@@ -76,42 +77,56 @@ static int packet_sphere_intersect(const RayPacket& packet, const Sphere& sphere
                                packet.directions[1].y, packet.directions[0].y);
     __m256d dz = _mm256_set_pd(packet.directions[3].z, packet.directions[2].z,
                                packet.directions[1].z, packet.directions[0].z);
-    
+
+    // oc = origin - center
     __m256d ocx = _mm256_sub_pd(ox, cx);
     __m256d ocy = _mm256_sub_pd(oy, cy);
     __m256d ocz = _mm256_sub_pd(oz, cz);
-    
+
+    // b = dot(oc, dir)   (actually half_b = dot(oc, dir))
     __m256d half_b = _mm256_add_pd(_mm256_mul_pd(ocx, dx),
                                    _mm256_add_pd(_mm256_mul_pd(ocy, dy),
                                                  _mm256_mul_pd(ocz, dz)));
+    // c = dot(oc, oc) - r^2
     __m256d oc_len2 = _mm256_add_pd(_mm256_mul_pd(ocx, ocx),
                                     _mm256_add_pd(_mm256_mul_pd(ocy, ocy),
                                                   _mm256_mul_pd(ocz, ocz)));
     __m256d c = _mm256_sub_pd(oc_len2, _mm256_mul_pd(r, r));
+
+    // discriminant = half_b^2 - c
     __m256d disc = _mm256_sub_pd(_mm256_mul_pd(half_b, half_b), c);
     __m256d zero = _mm256_set1_pd(0.0);
     __m256d mask_ge = _mm256_cmp_pd(disc, zero, _CMP_GE_OQ);
-    int mask = _mm256_movemask_pd(mask_ge);
+    int mask = _mm256_movemask_pd(mask_ge) & active_mask;
     if (mask == 0) return 0;
-    
+
     __m256d sqrt_disc = _mm256_sqrt_pd(disc);
+    // First root: t1 = -half_b - sqrt_disc
     __m256d t1 = _mm256_sub_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
-    double t_vals[4];
-    _mm256_store_pd(t_vals, t1);
-    
+    // Second root: t2 = -half_b + sqrt_disc
+    __m256d t2 = _mm256_add_pd(_mm256_sub_pd(zero, half_b), sqrt_disc);
+
+    double t1_vals[4], t2_vals[4];
+    _mm256_storeu_pd(t1_vals, t1);
+    _mm256_storeu_pd(t2_vals, t2);
+
     int hit_mask = 0;
     for (int i = 0; i < 4; ++i) {
-        if (mask & (1 << i)) {
-            double t = t_vals[i];
-            if (t > t_min && t < t_max_arr[i]) {
-                Ray ray(packet.origins[i], packet.directions[i]);
-                HitRecord temp;
-                if (sphere.hit(ray, t_min, t_max_arr[i], temp)) {
-                    if (temp.t < t_max_arr[i]) {
-                        t_max_arr[i] = temp.t;
-                        rec[i] = temp;
-                        hit_mask |= (1 << i);
-                    }
+        if (!(mask & (1 << i))) continue;
+
+        // Choose the smallest positive root that is > t_min
+        double t = 1e20;
+        if (t1_vals[i] > t_min && t1_vals[i] < t_max_arr[i]) t = t1_vals[i];
+        if (t2_vals[i] > t_min && t2_vals[i] < t_max_arr[i] && t2_vals[i] < t) t = t2_vals[i];
+
+        if (t < t_max_arr[i]) {
+            Ray ray(packet.origins[i], packet.directions[i]);
+            HitRecord temp;
+            if (sphere.hit(ray, t_min, t_max_arr[i], temp)) {
+                if (temp.t < t_max_arr[i]) {
+                    t_max_arr[i] = temp.t;
+                    rec[i] = temp;
+                    hit_mask |= (1 << i);
                 }
             }
         }
@@ -134,9 +149,9 @@ int BVHNode::hit_packet(const RayPacket& packet, double t_min, double t_max,
             int result_mask = 0;
             for (int idx : sphere_indices) {
                 int hit = packet_sphere_intersect(packet, scene_spheres[idx],
-                                                  t_min, t_max_arr, rec);
+                                                  t_min, t_max_arr, rec, box_mask);
                 result_mask |= hit;
-                if (result_mask == box_mask) break; // all active rays have a hit
+                if ((result_mask & box_mask) == box_mask) break; // all active rays hit
             }
             return result_mask;
         }
@@ -146,7 +161,7 @@ int BVHNode::hit_packet(const RayPacket& packet, double t_min, double t_max,
         for (int idx : sphere_indices) {
             const Sphere& sphere = scene_spheres[idx];
             for (int i = 0; i < 4; ++i) {
-                if (active_mask & (1 << i)) {
+                if (box_mask & (1 << i)) {
                     Ray r(packet.origins[i], packet.directions[i]);
                     if (sphere.hit(r, t_min, t_max, rec[i])) {
                         result_mask |= (1 << i);
@@ -293,7 +308,7 @@ bool BVH::hit(const Ray& ray, double t_min, double t_max, HitRecord& rec,
 
 int BVH::hit_packet(const RayPacket& packet, double t_min, double t_max,
                     HitRecord rec[4], const std::vector<Sphere>& scene_spheres,
-                    bool use_simd) const {
+                    bool use_simd, int active_mask) const {
     if (!root) return 0;
-    return root->hit_packet(packet, t_min, t_max, rec, scene_spheres, use_simd, 0xF);
+    return root->hit_packet(packet, t_min, t_max, rec, scene_spheres, use_simd, active_mask);
 }

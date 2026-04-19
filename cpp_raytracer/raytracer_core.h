@@ -81,7 +81,8 @@ public:
         
         // Apply rotation
         position = target + offset;
-    }};
+    }
+};
 
 class Scene {
 public:
@@ -105,7 +106,7 @@ public:
     void refit_bvh();
     
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
-    int hit_packet(const RayPacket& packet, HitRecord rec[4]) const;
+    int hit_packet(const RayPacket& packet, HitRecord rec[4], int active_mask = 0xF) const;
     
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
     
@@ -130,7 +131,7 @@ private:
     float sample_roughness(const HitRecord& rec) const;
     
     Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
-    void trace_packet(const RayPacket& packet, Vector3 colors[4], int depth, int max_depth);
+    void trace_packet(const RayPacket& packet, Vector3 colors[4], int depth, int max_depth, int active_mask = 0xF);
     
 public:
     RayTracer();
