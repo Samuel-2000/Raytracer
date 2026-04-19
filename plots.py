@@ -12,7 +12,7 @@ def load_benchmark_data(csv_path='benchmark_results.csv'):
 def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
     """Vykreslí porovnanie techník pre každú scénu (stĺpcový graf)."""
     df['combination'] = df.apply(lambda row: 
-        f"BVH={row['bvh']}, AS={row['adaptive']}, SS={row['subsampling']}, ND={row['neural']}", axis=1)
+        f"BVH={row['bvh']}, DynBVH={row['dynamic_bvh']}, SIMD={row['simd']}", axis=1)
     
     scenes = df['scene'].unique()
     n_scenes = len(scenes)
@@ -40,11 +40,11 @@ def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
     print(f"Graf uložený ako {output_path}")
 
 def plot_bvh_impact(df, output_path='bvh_impact.png'):
-    """Vykreslí vplyv BVH na výkon pre každú scénu (stĺpcový graf)."""
-    # Filtrujeme len kombinácie s vypnutými ostatnými technikami
-    base = df[(df['adaptive'] == False) & (df['subsampling'] == False) & (df['neural'] == False)]
+    """Vykreslí vplyv BVH na výkon pre každú scénu (stĺpcový graf) – len základná konfigurácia (dynBVH=False, SIMD=False)."""
+    # Filtrujeme len kombinácie s vypnutými ostatnými technikami (dynamic_bvh=False, simd=False)
+    base = df[(df['dynamic_bvh'] == False) & (df['simd'] == False)]
     
-    scenes = base['scene'].unique()  # scény, ktoré majú aspoň jednu kombináciu v base
+    scenes = base['scene'].unique()
     x = np.arange(len(scenes))
     width = 0.35
     
@@ -66,7 +66,7 @@ def plot_bvh_impact(df, output_path='bvh_impact.png'):
     
     ax.set_xlabel('Scéna')
     ax.set_ylabel('Čas (s)')
-    ax.set_title('Vplyv BVH na rýchlosť renderovania')
+    ax.set_title('Vplyv BVH na rýchlosť renderovania (dynBVH=False, SIMD=False)')
     ax.set_xticks(x)
     ax.set_xticklabels(scenes, rotation=45, ha='right')
     ax.legend()
@@ -87,10 +87,9 @@ def plot_bvh_impact(df, output_path='bvh_impact.png'):
     plt.show()
     print(f"Graf uložený ako {output_path}")
 
-
 def plot_bvh_aggregated(df, output_path='bvh_aggregated.png'):
     """
-    Stĺpcový graf – priemerný čas pre BVH True vs False naprieč všetkými kombináciami (AS, SS, ND).
+    Stĺpcový graf – priemerný čas pre BVH True vs False naprieč všetkými kombináciami (dynBVH, SIMD).
     """
     scenes = df['scene'].unique()
     x = np.arange(len(scenes))
@@ -139,19 +138,18 @@ def plot_bvh_aggregated(df, output_path='bvh_aggregated.png'):
     print(f"Graf uložený ako {output_path}")
 
 def plot_speedup(df, output_path='speedup.png'):
-    """Vykreslí zrýchlenie oproti základnej kombinácii (všetky tech. vypnuté)."""
+    """Vykreslí zrýchlenie oproti základnej kombinácii (všetky techniky vypnuté: bvh=False, dynamic_bvh=False, simd=False)."""
     base_times = {}
     for scene in df['scene'].unique():
         base = df[(df['scene'] == scene) & 
                   (df['bvh'] == False) & 
-                  (df['adaptive'] == False) & 
-                  (df['subsampling'] == False) & 
-                  (df['neural'] == False)]['time'].values
+                  (df['dynamic_bvh'] == False) & 
+                  (df['simd'] == False)]['time'].values
         base_times[scene] = base[0] if len(base) > 0 else np.nan
     
     df['speedup'] = df.apply(lambda row: base_times[row['scene']] / row['time'] if not np.isnan(base_times[row['scene']]) else np.nan, axis=1)
     df['combination'] = df.apply(lambda row: 
-        f"BVH={row['bvh']}, AS={row['adaptive']}, SS={row['subsampling']}, ND={row['neural']}", axis=1)
+        f"BVH={row['bvh']}, DynBVH={row['dynamic_bvh']}, SIMD={row['simd']}", axis=1)
     
     fig, ax = plt.subplots(figsize=(12, 6))
     scenes = df['scene'].unique()
@@ -177,7 +175,7 @@ def plot_line_by_combination(df, output_path='line_by_combination.png'):
     """
     df['combination_idx'] = range(len(df))
     df['combination'] = df.apply(lambda row: 
-        f"BVH={row['bvh']}, AS={row['adaptive']}, SS={row['subsampling']}, ND={row['neural']}", axis=1)
+        f"BVH={row['bvh']}, DynBVH={row['dynamic_bvh']}, SIMD={row['simd']}", axis=1)
     
     fig, ax = plt.subplots(figsize=(14, 7))
     scenes = df['scene'].unique()
@@ -213,7 +211,6 @@ def plot_box_by_bvh(df, output_path='box_bvh.png'):
             df[df['bvh'] == False]['time'].values]
     
     fig, ax = plt.subplots(figsize=(8, 6))
-    # Použitie tick_labels namiesto labels (od matplotlib 3.9)
     bp = ax.boxplot(data, tick_labels=['BVH True', 'BVH False'], patch_artist=True)
     
     # Farbenie boxov
@@ -234,9 +231,6 @@ def plot_box_by_bvh(df, output_path='box_bvh.png'):
     plt.show()
     print(f"Graf uložený ako {output_path}")
 
-
-
-
 def main():
     """Hlavná funkcia na generovanie všetkých grafov."""
     try:
@@ -253,7 +247,6 @@ def main():
         # Nové grafy – line plot a box plot
         plot_line_by_combination(df)
         plot_box_by_bvh(df)
-
         
         print("Všetky grafy boli úspešne vygenerované.")
     except Exception as e:
