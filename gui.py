@@ -995,7 +995,7 @@ class ScrollableTabbedControlPanel(QWidget):
         tech_layout.addWidget(self.subsampling_checkbox)
         
         self.neural_denoise_checkbox = QCheckBox("Neural Denoising")
-        self.neural_denoise_checkbox.setChecked(self.raytracer.settings.get('neural_denoising', False))
+        self.neural_denoise_checkbox.setChecked(self.raytracer.settings.get('SIMD_ray_hit', False))
         self.neural_denoise_checkbox.toggled.connect(self.on_neural_denoise_toggled)
         tech_layout.addWidget(self.neural_denoise_checkbox)
         
@@ -1052,7 +1052,7 @@ class ScrollableTabbedControlPanel(QWidget):
         self.raytracer.set_subsampling(enabled)
 
     def on_neural_denoise_toggled(self, enabled):
-        self.raytracer.set_neural_denoising(enabled)
+        self.raytracer.set_SIMD_ray_hit(enabled)
 
     def on_apply_scene(self):
         scene_name = self.scene_select.currentText()

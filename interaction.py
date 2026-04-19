@@ -2263,18 +2263,31 @@ class RayTracerInteraction:
             
             self.restart_rendering()
     
-    def set_adaptive_supersampling(self, enabled):
-        self.settings['adaptive_supersampling'] = enabled
+    #def set_adaptive_supersampling(self, enabled):
+    #    self.settings['adaptive_supersampling'] = enabled
+    #    # TODO: implement in C++
+    #    self.restart_rendering()
+    #
+    #def set_subsampling(self, enabled):
+    #    self.settings['subsampling'] = enabled
+    #    # TODO: implement in C++
+    #    self.restart_rendering()
+    #
+    #def set_neural_denoising(self, enabled):
+    #    self.settings['neural_denoising'] = enabled
+    #    # TODO: implement in C++
+    #    self.restart_rendering()
+
+    # SIMD bvh ray hit (susedné paprsky pravdepodobne trafia rovnaký objekt)
+    def set_SIMD_ray_hit(self, enabled):
+        self.settings['SIMD_ray_hit'] = enabled
         # TODO: implement in C++
         self.restart_rendering()
-    
-    def set_subsampling(self, enabled):
-        self.settings['subsampling'] = enabled
-        # TODO: implement in C++
-        self.restart_rendering()
-    
-    def set_neural_denoising(self, enabled):
-        self.settings['neural_denoising'] = enabled
+
+    # Dynamicky upravovať bvh hierarchiu v čase (pri pohybe objektov preč z ich obálky)
+    # bez tohoto sa staticky pri pohybe rebuildí celý bvh strom, čo je pomalé.
+    def set_dynamic_bvh(self, enabled):
+        self.settings['dynamic_bvh'] = enabled
         # TODO: implement in C++
         self.restart_rendering()
     
