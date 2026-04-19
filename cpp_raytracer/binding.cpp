@@ -155,6 +155,8 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("spheres", &Scene::spheres)
         .def_readwrite("background_color", &Scene::background_color)
         .def_readwrite("use_bvh", &Scene::use_bvh)
+        .def_readwrite("dynamic_bvh", &Scene::dynamic_bvh)   // NEW
+        .def_readwrite("simd_ray_hit", &Scene::simd_ray_hit) // NEW
         .def_readwrite("debug_mode", &Scene::debug_mode)
         .def("add_sphere", &Scene::add_sphere)
         .def("remove_sphere", &Scene::remove_sphere)

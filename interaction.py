@@ -926,7 +926,8 @@ class BenchmarkRunner(QThread):
     progress = pyqtSignal(int, int)  # current, total
     finished = pyqtSignal(str)       # csv_path
     error = pyqtSignal(str)
-    current_test = pyqtSignal(str, bool, bool, bool, bool, int, int)  # scene, bvh, adaptive, subsample, neural, current, total
+    #current_test = pyqtSignal(str, bool, bool, bool, bool, int, int)  # scene, bvh, adaptive, subsample, neural, current, total
+    current_test = pyqtSignal(str, bool, bool, bool, int, int)  # scene, bvh, dynamic, simd, current, total
     
     def __init__(self, raytracer):
         super().__init__()
@@ -937,27 +938,40 @@ class BenchmarkRunner(QThread):
     def run(self):
         try:
             combos = []
+
+            #for bvh in [False, True]:
+            #    for adaptive in [False, True]:
+            #        for subsample in [False, True]:
+            #            for neural in [False, True]:
+            #                combos.append((bvh, adaptive, subsample, neural))
+                            
             for bvh in [False, True]:
-                for adaptive in [False, True]:
-                    for subsample in [False, True]:
-                        for neural in [False, True]:
-                            combos.append((bvh, adaptive, subsample, neural))
-            
+                for dynamic in [False, True]:
+                    for simd in [False, True]:
+                        combos.append((bvh, dynamic, simd))
+
+
+
             scenes = self.raytracer.get_available_scenes()
             results = []
             total = len(combos) * len(scenes)
             current = 0
             
             original_bvh = self.raytracer.settings['bvh_enabled']
-            original_adaptive = self.raytracer.settings['adaptive_supersampling']
-            original_subsample = self.raytracer.settings['subsampling']
-            original_neural = self.raytracer.settings['neural_denoising']
-            
+            #original_adaptive = self.raytracer.settings['adaptive_supersampling']
+            #original_subsample = self.raytracer.settings['subsampling']
+            #original_neural = self.raytracer.settings['neural_denoising']
+            original_dynamic = self.raytracer.settings['dynamic_bvh']
+            original_simd = self.raytracer.settings['SIMD_ray_hit']
+
             for scene_name in scenes:
                 self.raytracer.load_scene(scene_name)
                 obj_count = self.raytracer.get_object_count()
                 print(f"\n=== Testing scene: {scene_name} ===\n")
-                for (bvh, adaptive, subsample, neural) in combos:
+
+            #   for (bvh, adaptive, subsample, neural) in combos:
+
+                for (bvh, dynamic, simd) in combos:
                     if self.stopped:
                         return
                     
@@ -965,16 +979,25 @@ class BenchmarkRunner(QThread):
                     if not bvh and obj_count > self.MAX_OBJECTS_FOR_NO_BVH:
                         print(f"\n  Skipping: BVH={bvh} (scene has {obj_count} objects > {self.MAX_OBJECTS_FOR_NO_BVH})\n")
                         continue
-                    
+
+                    # Preskočíme kombináciu, ak BVH vypnuté a dynamic zapnuté (nedáva zmysel)
+                    if not bvh and dynamic:
+                        print(f"\n  Skipping: BVH={bvh} and DYN={dynamic} doesn't make sense.)\n")
+                        continue
+
+
                     self.raytracer.set_bvh_enabled(bvh)
-                    self.raytracer.set_adaptive_supersampling(adaptive)
-                    self.raytracer.set_subsampling(subsample)
-                    self.raytracer.set_neural_denoising(neural)
+                    #self.raytracer.set_adaptive_supersampling(adaptive)
+                    #self.raytracer.set_subsampling(subsample)
+                    #self.raytracer.set_neural_denoising(neural)
+                    self.raytracer.set_dynamic_bvh(dynamic)
+                    self.raytracer.set_SIMD_ray_hit(simd)
 
-                    print(f"  Running: BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}")
+                #   print(f"  Running: BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}")
+                    print(f"  Running: BVH={bvh}, DYN={dynamic}, SIMD={simd}")
 
-                    comb_str = f"BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}"
-                    self.current_test.emit(scene_name, bvh, adaptive, subsample, neural, current+1, total)
+                    #self.current_test.emit(scene_name, bvh, adaptive, subsample, neural, current+1, total)
+                    self.current_test.emit(scene_name, bvh, dynamic, simd, current+1, total)
                     
                     start = time.time()
                     self.raytracer.render_state.set_mode(RenderMode.RAYTRACING)
@@ -987,9 +1010,11 @@ class BenchmarkRunner(QThread):
                     results.append({
                         'scene': scene_name,
                         'bvh': bvh,
-                        'adaptive': adaptive,
-                        'subsampling': subsample,
-                        'neural': neural,
+                        #'adaptive': adaptive,
+                        #'subsampling': subsample,
+                        #'neural': neural,
+                        'dynamic_bvh': dynamic,
+                        'simd': simd,
                         'time': elapsed,
                         'samples': self.raytracer.total_samples
                     })
@@ -997,14 +1022,17 @@ class BenchmarkRunner(QThread):
                     self.progress.emit(current, total)
             
             self.raytracer.set_bvh_enabled(original_bvh)
-            self.raytracer.set_adaptive_supersampling(original_adaptive)
-            self.raytracer.set_subsampling(original_subsample)
-            self.raytracer.set_neural_denoising(original_neural)
+            #self.raytracer.set_adaptive_supersampling(original_adaptive)
+            #self.raytracer.set_subsampling(original_subsample)
+            #self.raytracer.set_neural_denoising(original_neural)
+            self.raytracer.set_dynamic_bvh(original_dynamic)
+            self.raytracer.set_SIMD_ray_hit(original_simd)
             
             import csv
             csv_path = 'benchmark_results.csv'
             with open(csv_path, 'w', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=['scene','bvh','adaptive','subsampling','neural','time','samples'])
+                #writer = csv.DictWriter(f, fieldnames=['scene','bvh','adaptive','subsampling','neural','time','samples'])
+                writer = csv.DictWriter(f, fieldnames=['scene', 'bvh', 'dynamic_bvh', 'simd', 'time','samples'])
                 writer.writeheader()
                 writer.writerows(results)
             
@@ -1059,9 +1087,11 @@ class RayTracerInteraction:
             'camera_move_speed': 0.1,
             'camera_rotate_speed': 0.5,
             'bvh_enabled': True,
-            'adaptive_supersampling': False,
-            'subsampling': False,
-            'neural_denoising': False,
+            #'adaptive_supersampling': False,
+            #'subsampling': False,
+            #'neural_denoising': False,
+            'dynamic_bvh': False,
+            'SIMD_ray_hit': False,
         }
         
         # Initialize components
@@ -2278,18 +2308,20 @@ class RayTracerInteraction:
     #    # TODO: implement in C++
     #    self.restart_rendering()
 
-    # SIMD bvh ray hit (susedné paprsky pravdepodobne trafia rovnaký objekt)
-    def set_SIMD_ray_hit(self, enabled):
-        self.settings['SIMD_ray_hit'] = enabled
-        # TODO: implement in C++
-        self.restart_rendering()
-
     # Dynamicky upravovať bvh hierarchiu v čase (pri pohybe objektov preč z ich obálky)
     # bez tohoto sa staticky pri pohybe rebuildí celý bvh strom, čo je pomalé.
     def set_dynamic_bvh(self, enabled):
         self.settings['dynamic_bvh'] = enabled
-        # TODO: implement in C++
+        self.scene.simd_ray_hit = enabled   # sets the C++ member
         self.restart_rendering()
+
+    # SIMD bvh ray hit (susedné paprsky pravdepodobne trafia rovnaký objekt)
+    def set_SIMD_ray_hit(self, enabled):
+        self.settings['SIMD_ray_hit'] = enabled
+        self.scene.dynamic_bvh = enabled    # sets the C++ member
+        self.restart_rendering()
+
+
     
     # ==================== DENOISER METHODS ====================
     
@@ -2368,6 +2400,10 @@ class RayTracerInteraction:
         if self._gui:
             self._gui.benchmark_error(error_msg)
 
-    def _benchmark_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
+    #def _benchmark_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
+    #    if self._gui:
+    #        self._gui.update_current_test(scene, bvh, adaptive, subsample, neural, current, total)
+
+    def _benchmark_current_test(self, scene, bvh, dynamic, simd, current, total):
         if self._gui:
-            self._gui.update_current_test(scene, bvh, adaptive, subsample, neural, current, total)
+            self._gui.update_current_test(scene, bvh, dynamic, simd, current, total)

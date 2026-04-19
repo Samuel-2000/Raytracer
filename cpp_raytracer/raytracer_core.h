@@ -97,6 +97,8 @@ public:
     Vector3 background_color;
     std::shared_ptr<Skybox> skybox;
     bool use_bvh;
+    bool dynamic_bvh;      // NEW
+    bool simd_ray_hit;     // NEW
     bool debug_mode;
     BVH* bvh;
     

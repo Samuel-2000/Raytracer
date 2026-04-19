@@ -984,20 +984,34 @@ class ScrollableTabbedControlPanel(QWidget):
         self.bvh_checkbox.toggled.connect(self.on_bvh_toggled)
         tech_layout.addWidget(self.bvh_checkbox)
         
-        self.adaptive_ss_checkbox = QCheckBox("Adaptive Supersampling")
-        self.adaptive_ss_checkbox.setChecked(self.raytracer.settings.get('adaptive_supersampling', False))
-        self.adaptive_ss_checkbox.toggled.connect(self.on_adaptive_ss_toggled)
-        tech_layout.addWidget(self.adaptive_ss_checkbox)
-        
-        self.subsampling_checkbox = QCheckBox("Subsampling")
-        self.subsampling_checkbox.setChecked(self.raytracer.settings.get('subsampling', False))
-        self.subsampling_checkbox.toggled.connect(self.on_subsampling_toggled)
-        tech_layout.addWidget(self.subsampling_checkbox)
-        
-        self.neural_denoise_checkbox = QCheckBox("Neural Denoising")
-        self.neural_denoise_checkbox.setChecked(self.raytracer.settings.get('SIMD_ray_hit', False))
-        self.neural_denoise_checkbox.toggled.connect(self.on_neural_denoise_toggled)
-        tech_layout.addWidget(self.neural_denoise_checkbox)
+        #self.adaptive_ss_checkbox = QCheckBox("Adaptive Supersampling")
+        #self.adaptive_ss_checkbox.setChecked(self.raytracer.settings.get('adaptive_supersampling', False))
+        #self.adaptive_ss_checkbox.toggled.connect(self.on_adaptive_ss_toggled)
+        #tech_layout.addWidget(self.adaptive_ss_checkbox)
+        #
+        #self.subsampling_checkbox = QCheckBox("Subsampling")
+        #self.subsampling_checkbox.setChecked(self.raytracer.settings.get('subsampling', False))
+        #self.subsampling_checkbox.toggled.connect(self.on_subsampling_toggled)
+        #tech_layout.addWidget(self.subsampling_checkbox)
+        #
+        #self.neural_denoise_checkbox = QCheckBox("Neural Denoising")
+        #self.neural_denoise_checkbox.setChecked(self.raytracer.settings.get('SIMD_ray_hit', False))
+        #self.neural_denoise_checkbox.toggled.connect(self.on_neural_denoise_toggled)
+        #tech_layout.addWidget(self.neural_denoise_checkbox)
+
+
+        self.dynamic_bvh_checkbox = QCheckBox("Dynamic BVH")
+        self.dynamic_bvh_checkbox.setChecked(self.raytracer.settings.get('dynamic_bvh', False))
+        self.dynamic_bvh_checkbox.toggled.connect(self.on_dynamic_bvh_toggled)
+        tech_layout.addWidget(self.dynamic_bvh_checkbox)
+
+        self.simd_ray_hit_checkbox = QCheckBox("SIMD Ray Hit")
+        self.simd_ray_hit_checkbox.setChecked(self.raytracer.settings.get('SIMD_ray_hit', False))
+        self.simd_ray_hit_checkbox.toggled.connect(self.on_simd_ray_hit_toggled)
+        tech_layout.addWidget(self.simd_ray_hit_checkbox)
+
+
+
         
         tech_group.setLayout(tech_layout)
         layout.addWidget(tech_group)
@@ -1045,14 +1059,21 @@ class ScrollableTabbedControlPanel(QWidget):
     def on_bvh_toggled(self, enabled):
         self.raytracer.set_bvh_enabled(enabled)
 
-    def on_adaptive_ss_toggled(self, enabled):
-        self.raytracer.set_adaptive_supersampling(enabled)
+    #def on_adaptive_ss_toggled(self, enabled):
+    #    self.raytracer.set_adaptive_supersampling(enabled)
 
-    def on_subsampling_toggled(self, enabled):
-        self.raytracer.set_subsampling(enabled)
+    #def on_subsampling_toggled(self, enabled):
+    #    self.raytracer.set_subsampling(enabled)
 
-    def on_neural_denoise_toggled(self, enabled):
+    #def on_neural_denoise_toggled(self, enabled):
+    #    self.raytracer.set_SIMD_ray_hit(enabled)
+
+    def on_dynamic_bvh_toggled(self, enabled):
+        self.raytracer.set_dynamic_bvh(enabled)
+
+    def on_simd_ray_hit_toggled(self, enabled):
         self.raytracer.set_SIMD_ray_hit(enabled)
+
 
     def on_apply_scene(self):
         scene_name = self.scene_select.currentText()
@@ -1066,11 +1087,17 @@ class ScrollableTabbedControlPanel(QWidget):
         if self.raytracer._gui:
             self.raytracer._gui.set_optimization_controls_enabled(False)
 
-    def set_optimization_checks(self, bvh, adaptive, subsample, neural):
+    #def set_optimization_checks(self, bvh, adaptive, subsample, neural):
+    #    self.bvh_checkbox.setChecked(bvh)
+    #    self.adaptive_ss_checkbox.setChecked(adaptive)
+    #    self.subsampling_checkbox.setChecked(subsample)
+    #    self.neural_denoise_checkbox.setChecked(neural)
+
+    def set_optimization_checks(self, bvh, dynamic, simd):
         self.bvh_checkbox.setChecked(bvh)
-        self.adaptive_ss_checkbox.setChecked(adaptive)
-        self.subsampling_checkbox.setChecked(subsample)
-        self.neural_denoise_checkbox.setChecked(neural)
+        self.dynamic_bvh_checkbox.setChecked(dynamic)
+        self.simd_ray_hit_checkbox.setChecked(simd)
+
     
     def on_texture_type_changed(self, texture_type):
         """Handle texture type change - update parameter controls"""
@@ -2575,19 +2602,28 @@ class GUI(QMainWindow):
         self.set_optimization_controls_enabled(True)
         QMessageBox.critical(self, "Benchmark Error", error_msg)
 
-    def update_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
-        self.status_label.setText(f"Benchmark: {scene} - BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural} ({current}/{total})")
-        self.control_panel.set_optimization_checks(bvh, adaptive, subsample, neural)
+    #def update_current_test(self, scene, bvh, adaptive, subsample, neural, current, total):
+    #    self.status_label.setText(f"Benchmark: {scene} - BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural} ({current}/{total})")
+    #    self.control_panel.set_optimization_checks(bvh, adaptive, subsample, neural)
+
+    def update_current_test(self, scene, bvh, dynamic, simd, current, total):
+        self.status_label.setText(f"Benchmark: {scene} - BVH={bvh}, DynBVH={dynamic}, SIMD={simd} ({current}/{total})")
+        self.control_panel.set_optimization_checks(bvh, dynamic, simd)
 
     def set_optimization_controls_enabled(self, enabled):
         panel = self.control_panel
+
         panel.bvh_checkbox.setEnabled(enabled)
-        panel.adaptive_ss_checkbox.setEnabled(enabled)
-        panel.subsampling_checkbox.setEnabled(enabled)
-        panel.neural_denoise_checkbox.setEnabled(enabled)
+        #panel.adaptive_ss_checkbox.setEnabled(enabled)
+        #panel.subsampling_checkbox.setEnabled(enabled)
+        #panel.neural_denoise_checkbox.setEnabled(enabled)
+        panel.dynamic_bvh_checkbox.setEnabled(enabled)
+        panel.simd_ray_hit_checkbox.setEnabled(enabled)
+
         panel.scene_select.setEnabled(enabled)
         panel.apply_scene_btn.setEnabled(enabled)
         panel.run_benchmark_btn.setEnabled(enabled)
+
 
 
 

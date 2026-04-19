@@ -89,6 +89,8 @@ Scene::Scene()
     : background_color(0.1, 0.1, 0.1),
       bvh(nullptr),
       use_bvh(true),
+      dynamic_bvh(false),   // NEW
+      simd_ray_hit(false),   // NEW
       debug_mode(false),
       skybox(nullptr)
 {}
@@ -98,6 +100,8 @@ Scene::Scene(const Scene& other)
       background_color(other.background_color),
       bvh(nullptr),
       use_bvh(other.use_bvh),
+      dynamic_bvh(other.dynamic_bvh),
+      simd_ray_hit(other.simd_ray_hit),
       debug_mode(other.debug_mode),
       skybox(other.skybox)
 {}
@@ -115,6 +119,8 @@ Scene& Scene::operator=(const Scene& other) {
     spheres = other.spheres;
     background_color = other.background_color;
     use_bvh = other.use_bvh;
+    dynamic_bvh = other.dynamic_bvh;
+    simd_ray_hit = other.simd_ray_hit;    
     debug_mode = other.debug_mode;
     skybox = other.skybox;
 
@@ -327,19 +333,28 @@ void RayTracer::move_camera(const Vector3& delta) {
 
 std::vector<double> RayTracer::render(int width, int height, int samples_per_pixel, int max_depth) {
 
-    // Adaptive supersampling - TODO
+    // Adaptive supersampling - Do not implement
     // Reference: Woo et al., "Adaptive Supersampling for Ray Tracing" (1997)
     //            Kajiya, "The Rendering Equation" (1986)
     // Implementácia: po nasnímaní vzoriek detegovať hrany (napr. pomocou rozdielov farieb)
     // a v miestach s vysokým kontrastom pridať ďalšie vzorky.
 
-    // Subsampling - TODO
+    // Subsampling - Do not implement
     // Implementácia: vykresliť s nižším rozlíšením (napr. polovičným) a potom upscalovať
     // pomocou bilineárnej alebo bikubickej interpolácie. Ušetrí čas pri interakcii.
 
-    // Neural denoising - TODO
+    // Neural denoising - Do not implement
     // Po dokončení vykreslenia zavolať externú knižnicu na vyhladenie šumu.
     // Literatúra: K. Z. et al., "Neural Denoising for Ray Tracing" (2017)
+
+    // set_dynamic_bvh - TODO
+    // When enabled, BVH should be updated incrementally when objects move,
+    // instead of a full rebuild.
+
+    // set_SIMD_ray_hit - TODO
+    // When enabled, use SIMD instructions (e.g., AVX2) to test multiple rays
+    // against BVH nodes simultaneously. Reference: Wald et al., "SIMD Ray Tracing" (2008)
+
 
     std::vector<double> image_data(width * height * 3);
     camera.aspect_ratio = static_cast<double>(width) / height;
