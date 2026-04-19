@@ -1600,11 +1600,7 @@ class ScrollableTabbedControlPanel(QWidget):
     # ------------------------------------------------------------------
     # Object Management Methods
     # ------------------------------------------------------------------
-    
-    def _move_object(self, dx, dy, dz):
-        """Helper method to move selected object"""
-        self.raytracer.move_object(dx, dy, dz)
-        self.update_object_info()
+
     
     def update_object_list(self):
         """Update object dropdown list"""

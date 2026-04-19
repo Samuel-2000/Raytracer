@@ -43,7 +43,7 @@ PYBIND11_MODULE(raytracer_cpp, m) {
             return "Vector3(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
         });
     
-    // MaterialType enum - ADD THIS SECTION
+    // MaterialType enum
     py::enum_<MaterialType>(m, "MaterialType")
         .value("CUSTOM", MATERIAL_CUSTOM)
         .value("DIFFUSE", MATERIAL_DIFFUSE)
@@ -155,19 +155,20 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def_readwrite("spheres", &Scene::spheres)
         .def_readwrite("background_color", &Scene::background_color)
         .def_readwrite("use_bvh", &Scene::use_bvh)
-        .def_readwrite("dynamic_bvh", &Scene::dynamic_bvh)   // NEW
-        .def_readwrite("simd_ray_hit", &Scene::simd_ray_hit) // NEW
+        .def_readwrite("dynamic_bvh", &Scene::dynamic_bvh)
+        .def_readwrite("simd_ray_hit", &Scene::simd_ray_hit)
         .def_readwrite("debug_mode", &Scene::debug_mode)
         .def("add_sphere", &Scene::add_sphere)
         .def("remove_sphere", &Scene::remove_sphere)
         .def("build_bvh", &Scene::build_bvh)
+        .def("refit_bvh", &Scene::refit_bvh)
         .def("hit", &Scene::hit)
         .def("cast_ray_for_selection", &Scene::cast_ray_for_selection)
         .def("set_skybox", &Scene::set_skybox)
         .def("get_skybox", &Scene::get_skybox);
 
 
-    // RayTracer
+    // RayTracer (trace_ray binding removed)
     py::class_<RayTracer>(m, "RayTracer")
         .def(py::init<>())
         .def("set_scene", &RayTracer::set_scene)
@@ -177,7 +178,6 @@ PYBIND11_MODULE(raytracer_cpp, m) {
         .def("get_camera", &RayTracer::get_camera, py::return_value_policy::reference)
         .def("select_object", &RayTracer::select_object)
         .def("move_camera", &RayTracer::move_camera)
-        .def("trace_ray", &RayTracer::trace_ray)
+        // .def("trace_ray", &RayTracer::trace_ray)   // REMOVED: private method
         .def("get_scene", &RayTracer::get_scene, py::return_value_policy::reference);
 }
-

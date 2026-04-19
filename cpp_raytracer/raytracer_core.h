@@ -1,4 +1,4 @@
-// raytracer_core.h - UPDATED TO INCLUDE material.h
+// raytracer_core.h
 #pragma once
 #include <vector>
 #include <cmath>
@@ -6,9 +6,8 @@
 #include <string>
 #include <memory>
 #include "vector3.h"
-#include "material.h"  // ADD THIS LINE
+#include "material.h"
 
-// Forward declarations
 class Texture;
 class Skybox;
 class BVH;
@@ -16,13 +15,15 @@ class BVH;
 struct Ray {
     Vector3 origin;
     Vector3 direction;
-    
     Ray() : origin(0,0,0), direction(0,0,0) {}
     Ray(const Vector3& orig, const Vector3& dir) : origin(orig), direction(dir.normalize()) {}
-    
-    Vector3 at(double t) const { 
-        return origin + direction * t; 
-    }
+    Vector3 at(double t) const { return origin + direction * t; }
+};
+
+struct RayPacket {
+    Vector3 origins[4];
+    Vector3 directions[4];
+    double t_min, t_max;
 };
 
 struct HitRecord {
@@ -41,8 +42,8 @@ struct HitRecord {
     int object_id;
     
     HitRecord() : t(0), point(0,0,0), normal(0,0,0), sphere_center(0,0,0),
-                 albedo(0.8,0.8,0.8), metallic(0.0), roughness(0.5),
-                 emission(0,0,0), ior(1.5), front_face(true), object_id(0) {}
+                  albedo(0.8,0.8,0.8), metallic(0.0), roughness(0.5),
+                  emission(0,0,0), ior(1.5), front_face(true), object_id(0) {}
     
     void set_face_normal(const Ray& ray, const Vector3& outward_normal) {
         front_face = ray.direction.dot(outward_normal) < 0;
@@ -53,12 +54,10 @@ struct HitRecord {
 struct Sphere {
     Vector3 center;
     double radius;
-    Material material;  // CHANGED FROM INDIVIDUAL FIELDS TO Material STRUCT
+    Material material;
     int object_id;
     std::string name;
-    
     Sphere() : center(0,0,0), radius(1.0), material(), object_id(0), name("") {}
-    
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
 };
 
@@ -69,15 +68,9 @@ public:
     Vector3 up;
     double fov;
     double aspect_ratio;
-    
-    Camera() : position(0, 1, 5), target(0, 1, 4), up(0, 1, 0), fov(45.0), aspect_ratio(16.0/9.0) {}
-    
+    Camera() : position(0,1,5), target(0,1,4), up(0,1,0), fov(45.0), aspect_ratio(16.0/9.0) {}
     Ray get_ray(double u, double v) const;
-        
-    void move(const Vector3& delta) {
-        position = position + delta;
-    }
-    
+    void move(const Vector3& delta) { position = position + delta; }
     void rotate(double dx, double dy) {
         // Simple rotation
         Vector3 forward = (target - position).normalize();
@@ -88,8 +81,7 @@ public:
         
         // Apply rotation
         position = target + offset;
-    }
-};
+    }};
 
 class Scene {
 public:
@@ -97,8 +89,8 @@ public:
     Vector3 background_color;
     std::shared_ptr<Skybox> skybox;
     bool use_bvh;
-    bool dynamic_bvh;      // NEW
-    bool simd_ray_hit;     // NEW
+    bool dynamic_bvh;
+    bool simd_ray_hit;
     bool debug_mode;
     BVH* bvh;
     
@@ -110,12 +102,15 @@ public:
     void add_sphere(const Sphere& sphere);
     void remove_sphere(int object_id);
     void build_bvh();
+    void refit_bvh();
+    
     bool hit(const Ray& ray, double t_min, double t_max, HitRecord& rec) const;
+    int hit_packet(const RayPacket& packet, HitRecord rec[4]) const;
+    
     int cast_ray_for_selection(const Ray& ray, double t_min, double t_max) const;
-
+    
     void set_skybox(std::shared_ptr<Skybox> new_skybox);
     std::shared_ptr<Skybox> get_skybox() const;
-
 };
 
 class RayTracer {
@@ -134,20 +129,19 @@ private:
     Vector3 sample_albedo(const HitRecord& rec) const;
     float sample_roughness(const HitRecord& rec) const;
     
+    Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
+    void trace_packet(const RayPacket& packet, Vector3 colors[4], int depth, int max_depth);
+    
 public:
     RayTracer();
     ~RayTracer();
     void set_scene(const Scene& new_scene);
-    Vector3 trace_ray(const Ray& ray, int depth, int max_depth);
     std::vector<double> render(int width, int height, int samples_per_pixel, int max_depth);
-
+    
     Camera& get_camera() { return camera; }
     Camera get_camera_copy() const { return camera; }
     void set_camera(const Camera& cam) { camera = cam; }
     int select_object(double x, double y, int width, int height);
     void move_camera(const Vector3& delta);
-    
     Scene& get_scene() { return scene; }
 };
-
-
