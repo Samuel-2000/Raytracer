@@ -935,32 +935,69 @@ class BenchmarkRunner(QThread):
         self.stopped = False
         self.MAX_OBJECTS_FOR_NO_BVH = 2000   # prah počtu objektov
     
+    def _prepare_movements(self, scene, num_movements=9, move_fraction=0.5, speed=1.5, seed=42):
+        """Select a fixed set of objects and assign each a constant movement vector.
+        Returns: (selected_ids, list_of_movement_vectors_per_step)
+        where movement_vectors_per_step is a list of length num_movements,
+        each element is a dict {obj_id: (dx,dy,dz)} with the same vector for each object across all steps.
+        """
+        import random
+        # Exclude ground (object_id == 0)
+        all_objects = [s for s in scene.spheres if s.object_id != 0]
+        n_to_move = max(1, int(len(all_objects) * move_fraction))
+        rng = random.Random(seed)
+        selected_ids = [obj.object_id for obj in rng.sample(all_objects, n_to_move)]
+
+        # Assign a constant movement vector to each selected object
+        constant_vectors = {}
+        for obj_id in selected_ids:
+            dx = (rng.random() - 0.5) * 2 * speed
+            dy = (rng.random() - 0.5) * 2 * speed
+            dz = (rng.random() - 0.5) * 2 * speed
+            constant_vectors[obj_id] = (dx, dy, dz)
+
+        # For each step, use the same constant vectors
+        movements_per_step = []
+        for step in range(num_movements):
+            step_moves = {obj_id: constant_vectors[obj_id] for obj_id in selected_ids}
+            movements_per_step.append(step_moves)
+        return selected_ids, movements_per_step
+
+    def _apply_movement_step(self, scene, movements):
+        """Apply a single movement step (dict object_id -> (dx,dy,dz)) to the scene."""
+        for obj in scene.spheres:
+            if obj.object_id in movements:
+                dx, dy, dz = movements[obj.object_id]
+                obj.center.x += dx
+                obj.center.y += dy
+                obj.center.z += dz
+                # Keep inside reasonable bounds
+                obj.center.x = max(-8, min(8, obj.center.x))
+                obj.center.y = max(0.2, min(8, obj.center.y))
+                obj.center.z = max(-8, min(2, obj.center.z))
+
     def run(self):
         try:
             combos = []
-
-            #for bvh in [False, True]:
-            #    for adaptive in [False, True]:
-            #        for subsample in [False, True]:
-            #            for neural in [False, True]:
-            #                combos.append((bvh, adaptive, subsample, neural))
-                            
+            # for bvh in [False, True]:
+            #     for adaptive in [False, True]:
+            #         for subsample in [False, True]:
+            #             for neural in [False, True]:
+            #                 combos.append((bvh, adaptive, subsample, neural))
             for bvh in [False, True]:
                 for dynamic in [False, True]:
                     for simd in [False, True]:
                         combos.append((bvh, dynamic, simd))
 
-
-
             scenes = self.raytracer.get_available_scenes()
             results = []
             total = len(combos) * len(scenes)
             current = 0
-            
+
             original_bvh = self.raytracer.settings['bvh_enabled']
-            #original_adaptive = self.raytracer.settings['adaptive_supersampling']
-            #original_subsample = self.raytracer.settings['subsampling']
-            #original_neural = self.raytracer.settings['neural_denoising']
+            # original_adaptive = self.raytracer.settings['adaptive_supersampling']
+            # original_subsample = self.raytracer.settings['subsampling']
+            # original_neural = self.raytracer.settings['neural_denoising']
             original_dynamic = self.raytracer.settings['dynamic_bvh']
             original_simd = self.raytracer.settings['SIMD_ray_hit']
 
@@ -969,80 +1006,113 @@ class BenchmarkRunner(QThread):
                 obj_count = self.raytracer.get_object_count()
                 print(f"\n=== Testing scene: {scene_name} ===\n")
 
-            #   for (bvh, adaptive, subsample, neural) in combos:
+                # Save original sphere states for resetting later
+                original_spheres = []
+                for s in self.raytracer.scene.spheres:
+                    original_spheres.append((s.object_id, s.center.copy(), s.radius))
 
+                # Precompute movements for this scene (same for all combos)
+                selected_ids, movements_per_step = self._prepare_movements(
+                    self.raytracer.scene, num_movements=9, move_fraction=0.1, speed=0.5, seed=42
+                )
+
+                #for (bvh, adaptive, subsample, neural) in combos:
                 for (bvh, dynamic, simd) in combos:
                     if self.stopped:
                         return
-                    
-                    # Preskočíme kombináciu, ak BVH vypnuté a scéna má priveľa objektov
+
+                     # Preskočíme kombináciu, ak BVH vypnuté a scéna má priveľa objektov
                     if not bvh and obj_count > self.MAX_OBJECTS_FOR_NO_BVH:
                         print(f"\n  Skipping: BVH={bvh} (scene has {obj_count} objects > {self.MAX_OBJECTS_FOR_NO_BVH})\n")
                         continue
-
                     # Preskočíme kombináciu, ak BVH vypnuté a dynamic zapnuté (nedáva zmysel)
                     if not bvh and dynamic:
                         print(f"\n  Skipping: BVH={bvh} and DYN={dynamic} doesn't make sense.)\n")
                         continue
 
+                    # Reset scene to original positions
+                    for obj_id, center, radius in original_spheres:
+                        for s in self.raytracer.scene.spheres:
+                            if s.object_id == obj_id:
+                                s.center = center.copy()
+                                s.radius = radius
+                                break
+                    self.raytracer.scene.build_bvh()
+                    self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
 
+                    # Apply settings
                     self.raytracer.set_bvh_enabled(bvh)
-                    #self.raytracer.set_adaptive_supersampling(adaptive)
-                    #self.raytracer.set_subsampling(subsample)
-                    #self.raytracer.set_neural_denoising(neural)
+                    # self.raytracer.set_adaptive_supersampling(adaptive)
+                    # self.raytracer.set_subsampling(subsample)
+                    # self.raytracer.set_neural_denoising(neural)
                     self.raytracer.set_dynamic_bvh(dynamic)
                     self.raytracer.set_SIMD_ray_hit(simd)
 
-                #   print(f"  Running: BVH={bvh}, AS={adaptive}, SS={subsample}, ND={neural}")
+                    # Benchmark parameters: 10 frames of 8 samples each
+                    frames = 10
+                    samples_per_frame = 8
+
                     print(f"  Running: BVH={bvh}, DYN={dynamic}, SIMD={simd}")
 
                     #self.current_test.emit(scene_name, bvh, adaptive, subsample, neural, current+1, total)
                     self.current_test.emit(scene_name, bvh, dynamic, simd, current+1, total)
-                    
+
                     start = time.time()
-                    self.raytracer.render_state.set_mode(RenderMode.RAYTRACING)
-                    self.raytracer.restart_rendering()
-                    while (self.raytracer.render_state.current_mode == RenderMode.RAYTRACING 
-                           and self.raytracer.total_samples < self.raytracer.settings['max_samples']):
-                        time.sleep(0.05)
+
+                    for frame in range(frames):
+                        # Render one batch (samples_per_frame) – result ignored
+                        #self.raytracer.render_state.set_mode(RenderMode.RAYTRACING)
+                        self.raytracer.restart_rendering()
+                        #while (self.raytracer.render_state.current_mode == RenderMode.RAYTRACING 
+                        #    and self.raytracer.total_samples < self.raytracer.settings['max_samples']):
+                        #    time.sleep(0.05)
+
+                        # Move objects after each frame except the last
+                        if frame < frames - 1:
+                            self._apply_movement_step(self.raytracer.scene, movements_per_step[frame])
+                            #if bvh:
+                            #    if dynamic:
+                            #        self.raytracer.scene.refit_bvh()
+                            #    else:
+                            #        self.raytracer.scene.build_bvh()
+                            #    # Notify C++ about scene change
+                            #    self.raytracer.ray_tracer.set_scene(self.raytracer.scene)
+
                     elapsed = time.time() - start
-                    
+
                     results.append({
                         'scene': scene_name,
                         'bvh': bvh,
-                        #'adaptive': adaptive,
-                        #'subsampling': subsample,
-                        #'neural': neural,
+                        # 'adaptive': adaptive,
+                        # 'subsampling': subsample,
+                        # 'neural': neural,
                         'dynamic_bvh': dynamic,
                         'simd': simd,
                         'time': elapsed,
-                        'samples': self.raytracer.total_samples
+                        'samples': frames * samples_per_frame   # record total samples for info
                     })
                     current += 1
                     self.progress.emit(current, total)
-            
+
             self.raytracer.set_bvh_enabled(original_bvh)
-            #self.raytracer.set_adaptive_supersampling(original_adaptive)
-            #self.raytracer.set_subsampling(original_subsample)
-            #self.raytracer.set_neural_denoising(original_neural)
+            # self.raytracer.set_adaptive_supersampling(original_adaptive)
+            # self.raytracer.set_subsampling(original_subsample)
+            # self.raytracer.set_neural_denoising(original_neural)
             self.raytracer.set_dynamic_bvh(original_dynamic)
             self.raytracer.set_SIMD_ray_hit(original_simd)
-            
+
             import csv
             csv_path = 'benchmark_results.csv'
             with open(csv_path, 'w', newline='') as f:
-                #writer = csv.DictWriter(f, fieldnames=['scene','bvh','adaptive','subsampling','neural','time','samples'])
+                # writer = csv.DictWriter(f, fieldnames=['scene','bvh','adaptive','subsampling','neural','time','samples'])
                 writer = csv.DictWriter(f, fieldnames=['scene', 'bvh', 'dynamic_bvh', 'simd', 'time','samples'])
                 writer.writeheader()
                 writer.writerows(results)
-            
+
             self.finished.emit(csv_path)
-            
+
         except Exception as e:
             self.error.emit(str(e))
-    
-    def stop(self):
-        self.stopped = True
 
 
 
@@ -1075,7 +1145,7 @@ class RayTracerInteraction:
         
         # Settings
         self.settings = {
-            'max_samples': 32,
+            'max_samples': 8,
             'samples_per_batch': 8,
             'max_depth': 4,
             'exposure': 1.5,
