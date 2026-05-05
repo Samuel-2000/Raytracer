@@ -551,12 +551,12 @@ class ScrollableTabbedControlPanel(QWidget):
         layout.addWidget(move_group)
         
         # Connect buttons
-        self.btn_left.clicked.connect(lambda: self._move_object(-1, 0, 0))
-        self.btn_right.clicked.connect(lambda: self._move_object(1, 0, 0))
-        self.btn_up.clicked.connect(lambda: self._move_object(0, 1, 0))
-        self.btn_down.clicked.connect(lambda: self._move_object(0, -1, 0))
-        self.btn_forward.clicked.connect(lambda: self._move_object(0, 0, -1))
-        self.btn_backward.clicked.connect(lambda: self._move_object(0, 0, 1))
+        self.btn_left.clicked.connect(lambda: self.move_object(-1, 0, 0))
+        self.btn_right.clicked.connect(lambda: self.move_object(1, 0, 0))
+        self.btn_up.clicked.connect(lambda: self.move_object(0, 1, 0))
+        self.btn_down.clicked.connect(lambda: self.move_object(0, -1, 0))
+        self.btn_forward.clicked.connect(lambda: self.move_object(0, 0, -1))
+        self.btn_backward.clicked.connect(lambda: self.move_object(0, 0, 1))
         
         # REMOVED: Dimension locks group (moved to status bar)
         
@@ -1437,6 +1437,10 @@ class ScrollableTabbedControlPanel(QWidget):
         self.update_object_info()
         self.update_material_sliders()
     
+    def move_object(self, dx, dy, dz):
+        """Move the selected object by (dx, dy, dz) in world space."""
+        self.raytracer.move_object(dx, dy, dz)
+
     def update_object_info(self):
         """Update object information display"""
         obj = self.raytracer.get_selected_object()
@@ -1835,7 +1839,7 @@ class GUI(QMainWindow):
     def setup_ui(self):
         """Setup the main UI"""
         self.setWindowTitle("C++ Ray Tracer - Interactive Controls with Skybox & Textures")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setGeometry(100, 100, 1900, 1000)
         
         # Central widget
         central_widget = QWidget()
@@ -2480,7 +2484,7 @@ class GUI(QMainWindow):
         # Object movement keys
         if key in self.object_keys:
             dx, dy, dz = self.object_keys[key]
-            self.control_panel._move_object(dx, dy, dz)
+            self.control_panel.move_object(dx, dy, dz)
             event.accept()
             return
         

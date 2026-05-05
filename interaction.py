@@ -759,20 +759,26 @@ class SceneManager:
         print(f"Skybox is None: {skybox is None}")
         scene.set_skybox(skybox)
         
-        # Ground with texture
+        # Metallic ground (wet floor look)
         ground_material = Material()
         ground_material.albedo = Vector3(0.9, 0.9, 0.9)
-        ground_material.roughness = 0.8
-        ground_material.material_type = MaterialType.DIFFUSE
+        ground_material.roughness = 0.15          # low roughness = shiny
+        ground_material.metallic = 0.95           # high metallic
+        ground_material.material_type = MaterialType.METAL   # treat as metal for reflections
         
         # Add checker texture to ground if available
+        #if texture_manager:
+        #    checker_texture = texture_manager.create_checker_texture(
+        #        Vector3(0.9, 0.9, 0.9),
+        #        Vector3(0.7, 0.7, 0.7),
+        #        scale=5.0
+        #    )
+        #    ground_material.albedo_texture = checker_texture
+
         if texture_manager:
-            checker_texture = texture_manager.create_checker_texture(
-                Vector3(0.9, 0.9, 0.9),
-                Vector3(0.7, 0.7, 0.7),
-                scale=5.0
-            )
-            ground_material.albedo_texture = checker_texture
+            checker = texture_manager.create_checker_texture(
+                Vector3(0.8,0.8,0.8), Vector3(0.5,0.5,0.5), scale=5.0)
+            ground_material.albedo_texture = checker
         
         ground = Sphere()
         ground.center = Vector3(0, -100.5, 0)
@@ -878,47 +884,172 @@ class SceneGenerator:
     def _create_many_objects_scene(self, num_objects, texture_manager):
         scene = Scene()
         
-        # Ground
+        # Metallic ground (wet floor look) with checker texture
+        ground_material = Material()
+        ground_material.albedo = Vector3(0.9, 0.9, 0.9)
+        ground_material.roughness = 0.15
+        ground_material.metallic = 0.95
+        ground_material.material_type = MaterialType.METAL
+        
+        if texture_manager:
+            checker = texture_manager.create_checker_texture(
+                Vector3(0.8, 0.8, 0.8), Vector3(0.5, 0.5, 0.5), scale=5.0)
+            ground_material.albedo_texture = checker
+        
         ground = Sphere()
         ground.center = Vector3(0, -100.5, 0)
         ground.radius = 100.0
-        ground.material = Material()
-        ground.material.albedo = Vector3(0.7, 0.7, 0.7)
-        ground.material.roughness = 0.8
-        ground.material.material_type = MaterialType.DIFFUSE
+        ground.material = ground_material
         ground.object_id = 0
         ground.name = "Ground"
         scene.add_sphere(ground)
         
-        # Dynamický rozsah podľa počtu objektov
-        # Pre 10k objektov max_range ~ 10, pre 1M ~ 50
+        # Atmosphere skybox (changeable via GUI)
+        skybox = SkyboxManager.create_atmosphere()
+        scene.set_skybox(skybox)
+        
+        # Gaussian colour helper
+        def random_gaussian_color():
+            r = random.gauss(0.5, 0.3)
+            g = random.gauss(0.5, 0.3)
+            b = random.gauss(0.5, 0.3)
+            return Vector3(max(0.0, min(1.0, r)),
+                        max(0.0, min(1.0, g)),
+                        max(0.0, min(1.0, b)))
+        
+        texture_types = ['wood', 'marble', 'noise', 'checker', 'metal']
+        
         max_range = min(50, 5 * (num_objects ** (1/3)))
-        min_range = -max_range
+        near_z = -0.5
+        far_z = -max_range
         
         random.seed(42)
+
+        max_range = min(50, 5 * (num_objects ** (1/2)))
+        near_z = -0.5        # closest distance = 0.5 m
+        far_z = -max_range   # farthest distance (e.g. -50)
+        d_min = -near_z      # 0.5
+        d_max = -far_z       # max_range (up to 50)
+
+        
         for i in range(1, num_objects + 1):
             sphere = Sphere()
-            sphere.radius = random.uniform(0.1, 0.5)
-            sphere.center = Vector3(
-                random.uniform(min_range, max_range),
-                random.uniform(0.2, 5),
-                random.uniform(min_range, max_range)
-            )
-            mat_type = random.choice([MaterialType.DIFFUSE, MaterialType.METAL, MaterialType.PLASTIC])
-            sphere.material = Material()
-            sphere.material.material_type = mat_type
-            sphere.material.albedo = Vector3(random.random(), random.random(), random.random())
-            sphere.material.metallic = 0.0 if mat_type == MaterialType.DIFFUSE else 0.9
-            sphere.material.roughness = random.uniform(0.1, 0.7)
+            sphere.radius = random.uniform(0.15, 0.6)
+            
+            # Uniform Z distribution
+            z = random.uniform(far_z, near_z)
+            distance = -z
+    
+            # ----- Z biased toward far distances (quadratic density) -----
+            # PDF ~ distance, so CDF ~ distance^2
+            u = random.random()
+            d = math.sqrt(u * (d_max*d_max - d_min*d_min) + d_min*d_min)
+            z = -d
+            distance = d
+
+
+            x = random.gauss(0, 1 + distance * 0.4)
+            y = random.uniform(-0.2, 1 + 0.6*distance)
+            
+            sphere.center = Vector3(x, y, z)
+            
+            # ---- Material decision (unchanged from your last version) ----
+            if random.random() < 0.05:
+                mat = Material()
+                mat.material_type = MaterialType.DIFFUSE
+                mat.albedo = Vector3(1.0, 1.0, 1.0)
+                mat.emission = Vector3(
+                    random.uniform(2.0, 10.0),
+                    random.uniform(2.0, 10.0),
+                    random.uniform(2.0, 10.0)
+                )
+                mat.metallic = 0.0
+                mat.roughness = 0.1
+                sphere.material = mat
+            else:
+                use_texture = random.random() < 0.1
+                if use_texture:
+                    tex_type = random.choice(texture_types)
+                    if tex_type == 'wood':
+                        mat = MaterialPresets.create_wood()
+                        if texture_manager:
+                            color = random_gaussian_color()
+                            tex = texture_manager.create_wood_texture(
+                                scale=random.uniform(4.0, 12.0),
+                                color=color
+                            )
+                            mat.albedo_texture = tex
+                    elif tex_type == 'marble':
+                        mat = MaterialPresets.create_marble()
+                        if texture_manager:
+                            color = random_gaussian_color()
+                            tex = texture_manager.create_marble_texture(
+                                scale=random.uniform(2.0, 6.0),
+                                color=color
+                            )
+                            mat.albedo_texture = tex
+                    elif tex_type == 'noise':
+                        mat = MaterialPresets.create_plastic()
+                        if texture_manager:
+                            tex = texture_manager.create_noise_texture(scale=random.uniform(1.0, 5.0))
+                            mat.albedo_texture = tex
+                        mat.albedo = random_gaussian_color()
+                    elif tex_type == 'checker':
+                        mat = Material()
+                        mat.material_type = MaterialType.DIFFUSE
+                        if texture_manager:
+                            c1 = random_gaussian_color()
+                            c2 = random_gaussian_color()
+                            tex = texture_manager.create_checker_texture(
+                                color1=c1, color2=c2,
+                                scale=random.uniform(5.0, 15.0)
+                            )
+                            mat.albedo_texture = tex
+                        mat.albedo = Vector3(0.8, 0.8, 0.8)
+                        mat.metallic = 0.0
+                        mat.roughness = random.uniform(0.3, 0.7)
+                    elif tex_type == 'metal':
+                        mat = MaterialPresets.create_metal()
+                        if texture_manager:
+                            tex = texture_manager.create_metal_texture(
+                                roughness_variation=random.uniform(0.05, 0.2)
+                            )
+                            mat.albedo_texture = tex
+                            mat.roughness_texture = tex
+                        mat.albedo = random_gaussian_color()
+                    sphere.material = mat
+                else:
+                    r = random.random()
+                    if r < 0.85:
+                        mat_type = MaterialType.METAL
+                        metallic = 1.0 - random.expovariate(12.0)
+                        metallic = max(0.85, min(1.0, metallic))
+                        roughness = random.uniform(0.05, 0.3)
+                        albedo = random_gaussian_color()
+                    elif r < 0.95:
+                        mat_type = MaterialType.PLASTIC
+                        metallic = 0.05 + random.random() * 0.1
+                        roughness = random.uniform(0.2, 0.6)
+                        albedo = random_gaussian_color()
+                    else:
+                        mat_type = MaterialType.DIFFUSE
+                        metallic = 0.0
+                        roughness = random.uniform(0.5, 0.9)
+                        albedo = random_gaussian_color()
+                    
+                    mat = Material()
+                    mat.material_type = mat_type
+                    mat.albedo = albedo
+                    mat.metallic = metallic
+                    mat.roughness = roughness
+                    sphere.material = mat
+            
             sphere.object_id = i
             sphere.name = f"Obj_{i}"
             scene.add_sphere(sphere)
         
         scene.build_bvh()
         return scene
-    
-
-
 
 
 class BenchmarkRunner(QThread):
