@@ -59,11 +59,12 @@ def plot_simd_comparison(df, output_path='simd_comparison.png'):
         
     x = np.arange(2)
     width = 0.25
+    gap = 0.02
     
     combinations = [
-        (True, True, 'Build=1, Fit=1', '#2ecc71'),   
-        (True, False, 'Build=1, Fit=0', '#f39c12'),  
-        (False, False, 'Build=0, Fit=0', '#e74c3c')  
+        (False, False, 'Build=0, Fit=0', '#e74c3c'),
+        (True, False, 'Build=1, Fit=0', '#f39c12'),
+        (True, True, 'Build=1, Fit=1', '#2ecc71')
     ]
     
     for i, scene in enumerate(scenes):
@@ -76,7 +77,7 @@ def plot_simd_comparison(df, output_path='simd_comparison.png'):
                 val = scene_df[(scene_df['bvh'] == bvh) & (scene_df['dynamic_bvh'] == dyn) & (scene_df['simd'] == simd)]['time'].values
                 vals.append(val[0] if len(val) > 0 else np.nan)
             
-            pos = x + (j - 1) * width
+            pos = x + (j - 1) * (width + gap)
             ax.bar(pos, vals, width, label=label, color=color, edgecolor='black', alpha=0.9)
             
             for idx_pos, v in zip(pos, vals):
