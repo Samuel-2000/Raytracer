@@ -138,31 +138,51 @@ def plot_bvh_aggregated(df, output_path='bvh_aggregated.png'):
     print(f"Graf uložený ako {output_path}")
 
 def plot_speedup(df, output_path='speedup.png'):
-    """Vykreslí zrýchlenie oproti základnej kombinácii (všetky techniky vypnuté: bvh=False, dynamic_bvh=False, simd=False)."""
-    base_times = {}
-    for scene in df['scene'].unique():
-        base = df[(df['scene'] == scene) & 
-                  (df['bvh'] == False) & 
-                  (df['dynamic_bvh'] == False) & 
-                  (df['simd'] == False)]['time'].values
-        base_times[scene] = base[0] if len(base) > 0 else np.nan
+    """Vykreslí zrýchlenie oproti základnej kombinácii. Garantuje zobrazenie neúplných dát."""
     
-    df['speedup'] = df.apply(lambda row: base_times[row['scene']] / row['time'] if not np.isnan(base_times[row['scene']]) else np.nan, axis=1)
     df['combination'] = df.apply(lambda row: 
         f"BVH={row['bvh']}, DynBVH={row['dynamic_bvh']}, SIMD={row['simd']}", axis=1)
     
+    all_combinations = list(df['combination'].unique())
+    
     fig, ax = plt.subplots(figsize=(12, 6))
-    scenes = df['scene'].unique()
-    for scene in scenes:
+    
+    for scene in df['scene'].unique():
         scene_df = df[df['scene'] == scene]
-        ax.plot(scene_df['combination'], scene_df['speedup'], marker='o', label=scene)
+        
+        base_df = scene_df[(scene_df['bvh'] == False) & 
+                           (scene_df['dynamic_bvh'] == False) & 
+                           (scene_df['simd'] == False)]
+        
+        if not base_df.empty:
+            base_time = base_df['time'].iloc[0]
+        else:
+            base_time = scene_df['time'].max()
+            
+        if pd.isna(base_time):
+            continue
+            
+        x_indices = []
+        y_vals = []
+        
+        for i, comb in enumerate(all_combinations):
+            row = scene_df[scene_df['combination'] == comb]
+            if not row.empty:
+                x_indices.append(i)
+                speedup = base_time / row['time'].iloc[0]
+                y_vals.append(speedup)
+        
+        if x_indices:
+            ax.plot(x_indices, y_vals, marker='o', label=scene, linewidth=2)
+
+    ax.set_xticks(range(len(all_combinations)))
+    ax.set_xticklabels(all_combinations, rotation=45, ha='right')
     
     ax.set_xlabel('Kombinácia techník')
     ax.set_ylabel('Zrýchlenie (násobok)')
-    ax.set_title('Zrýchlenie oproti základnej konfigurácii (všetky techniky vypnuté)')
+    ax.set_title('Zrýchlenie oproti základnej konfigurácii (alebo najpomalšiemu behu)')
     ax.legend()
     ax.grid(True, alpha=0.3)
-    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
     plt.show()
