@@ -4,17 +4,31 @@ import matplotlib.patches as mpatches
 import numpy as np
 import os
 
+# Output directory constant
+OUTPUT_DIR = "output/images"
+
 def load_benchmark_data(csv_path='benchmark_results.csv'):
-    """Načíta dáta z CSV súboru a zoradí ich od 0 po 1."""
+    """Load data from CSV file and sort by bvh, dynamic_bvh, simd."""
     if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"Súbor {csv_path} neexistuje. Spustite najprv benchmark.")
+        raise FileNotFoundError(f"File {csv_path} does not exist. Run the benchmark first.")
     
     df = pd.read_csv(csv_path)
     df.sort_values(by=['bvh', 'dynamic_bvh', 'simd'], ascending=[True, True, True], inplace=True)
     return df
 
-def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
-    """Vykreslí porovnanie techník pre každú scénu (stĺpcový graf)."""
+def save_both_formats(fig, output_path):
+    """Save the current figure as both PNG and PDF."""
+    png_path = output_path
+    pdf_path = os.path.splitext(output_path)[0] + '.pdf'
+    
+    fig.savefig(png_path, dpi=150, bbox_inches='tight')
+    fig.savefig(pdf_path, bbox_inches='tight')
+    print(f"Graph saved to {png_path} and {pdf_path}")
+
+def plot_technique_comparison(df):
+    """Bar chart comparison of techniques for each scene."""
+    output_path = os.path.join(OUTPUT_DIR, 'benchmark_comparison.png')
+    
     df['combination'] = df.apply(lambda row: 
         f"Build={int(row['bvh'])}, Fit={int(row['dynamic_bvh'])}, SIMD={int(row['simd'])}", axis=1)
     
@@ -22,7 +36,7 @@ def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
     n_scenes = len(scenes)
     
     fig, axes = plt.subplots(n_scenes, 1, figsize=(12, 5*n_scenes), squeeze=False)
-    fig.suptitle('Porovnanie výkonu optimalizačných techník', fontsize=16)
+    fig.suptitle('Performance Comparison of Optimization Techniques', fontsize=16)
     
     for idx, scene in enumerate(scenes):
         ax = axes[idx, 0]
@@ -30,9 +44,9 @@ def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
         colors = ['green' if bvh else 'red' for bvh in scene_df['bvh']]
         
         bars = ax.barh(scene_df['combination'], scene_df['time'], color=colors)
-        ax.set_title(f'Scéna: {scene}')
-        ax.set_xlabel('Čas (s)')
-        ax.set_ylabel('Kombinácia techník')
+        ax.set_title(f'Scene: {scene}')
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Technique Combination')
         
         for bar, time_val in zip(bars, scene_df['time']):
             ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2, 
@@ -44,16 +58,19 @@ def plot_technique_comparison(df, output_path='benchmark_comparison.png'):
     
     plt.tight_layout()
     fig.subplots_adjust(bottom=0.06)
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
-def plot_simd_comparison(df, output_path='simd_comparison.png'):
-    """Vertikálny graf rozdelený na 'Bez SIMD' a 'So SIMD' (bez 'simple' scény)."""
+def plot_simd_comparison(df):
+    """Vertical bar chart comparing 'Without SIMD' and 'With SIMD' for non-simple scenes."""
+    output_path = os.path.join(OUTPUT_DIR, 'simd_comparison.png')
+    
     scenes = [s for s in df['scene'].unique() if s != 'simple']
+    if not scenes:
+        print("No non-simple scenes for SIMD comparison. Skipping.")
+        return
     
     fig, axes = plt.subplots(1, len(scenes), figsize=(6 * len(scenes), 6), sharey=False)
-    
     if len(scenes) == 1:
         axes = [axes]
         
@@ -82,28 +99,30 @@ def plot_simd_comparison(df, output_path='simd_comparison.png'):
             
             for idx_pos, v in zip(pos, vals):
                 if not np.isnan(v):
-                    ax.text(idx_pos, v + (np.nanmax(vals)*0.02 if not np.isnan(np.nanmax(vals)) else 0.1), 
-                            f"{v:.2f}s", ha='center', va='bottom', fontsize=8)
+                    max_val = np.nanmax(vals)
+                    offset = max_val * 0.02 if not np.isnan(max_val) else 0.1
+                    ax.text(idx_pos, v + offset, f"{v:.2f}s", ha='center', va='bottom', fontsize=8)
 
-        ax.set_title(f'Scéna: {scene}')
+        ax.set_title(f'Scene: {scene}')
         ax.set_xticks(x)
-        ax.set_xticklabels(['Bez SIMD (0)', 'So SIMD (1)'], fontsize=12, fontweight='bold')
-        ax.set_ylabel('Čas (s)')
+        ax.set_xticklabels(['Without SIMD (0)', 'With SIMD (1)'], fontsize=12, fontweight='bold')
+        ax.set_ylabel('Time (s)')
         ax.grid(True, axis='y', alpha=0.3)
             
-    plt.suptitle("Vplyv SIMD vektorizácie naprieč technikami", fontsize=16)
+    plt.suptitle("Impact of SIMD Vectorization Across Techniques", fontsize=16)
     
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.02), ncol=3, frameon=False, fontsize=12)
     
     plt.tight_layout()
     fig.subplots_adjust(bottom=0.15) 
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
-def plot_speedup(df, output_path='speedup.png'):
-    """Vykreslí zrýchlenie oproti základnej kombinácii."""
+def plot_speedup(df):
+    """Plot speedup relative to the base (no optimizations) configuration."""
+    output_path = os.path.join(OUTPUT_DIR, 'speedup.png')
+    
     df['combination'] = df.apply(lambda row: 
         f"Build={int(row['bvh'])}, Fit={int(row['dynamic_bvh'])}, SIMD={int(row['simd'])}", axis=1)
     
@@ -128,7 +147,7 @@ def plot_speedup(df, output_path='speedup.png'):
         if not base_df.empty:
             base_time = base_df['time'].iloc[0]
         else:
-            base_time = scene_df['time'].max()
+            base_time = scene_df['time'].max()  # fallback to slowest if base missing
             
         if pd.isna(base_time):
             continue
@@ -150,22 +169,22 @@ def plot_speedup(df, output_path='speedup.png'):
     ax.set_xticks(range(len(all_combinations)))
     ax.set_xticklabels(all_combinations, rotation=45, ha='right')
     
-    ax.set_xlabel('Kombinácia techník')
-    ax.set_ylabel('Zrýchlenie (násobok)')
-    ax.set_title('Zrýchlenie oproti základnej konfigurácii (alebo najpomalšiemu behu)', pad=35)
+    ax.set_xlabel('Technique Combination')
+    ax.set_ylabel('Speedup (×)')
+    ax.set_title('Speedup Relative to Baseline Configuration (or Slowest Run)', pad=35)
     
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15), ncol=len(df['scene'].unique()), frameon=False)
-    
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
-
-def plot_bvh_impact(df, output_path='build_impact.png'):
-    """Vykreslí vplyv Build na výkon pre každú scénu."""
-    base = df[(df['dynamic_bvh'] == False) & (df['simd'] == False)]
     
+    plt.tight_layout()
+    save_both_formats(fig, output_path)
+    plt.close(fig)
+
+def plot_bvh_impact(df):
+    """Show impact of BVH Build on performance for each scene (Fit=0, SIMD=0)."""
+    output_path = os.path.join(OUTPUT_DIR, 'build_impact.png')
+    
+    base = df[(df['dynamic_bvh'] == False) & (df['simd'] == False)]
     scenes = base['scene'].unique()
     x = np.arange(len(scenes))
     width = 0.35
@@ -183,12 +202,11 @@ def plot_bvh_impact(df, output_path='build_impact.png'):
     bars1 = ax.bar(x - width/2, bvh_on, width, label='Build=1', color='green')
     bars2 = ax.bar(x + width/2, bvh_off, width, label='Build=0', color='red')
     
-    ax.set_xlabel('Scéna')
-    ax.set_ylabel('Čas (s)')
-    ax.set_title('Vplyv Build na rýchlosť renderovania (Fit=0, SIMD=0)', pad=35)
+    ax.set_xlabel('Scene')
+    ax.set_ylabel('Time (s)')
+    ax.set_title('Impact of BVH Build on Rendering Speed (Fit=0, SIMD=0)', pad=35)
     ax.set_xticks(x)
     ax.set_xticklabels(scenes, rotation=45, ha='right')
-    
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.12), ncol=2, frameon=False)
     
     for bar in bars1:
@@ -203,11 +221,13 @@ def plot_bvh_impact(df, output_path='build_impact.png'):
                         xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
-def plot_bvh_aggregated(df, output_path='build_aggregated.png'):
+def plot_bvh_aggregated(df):
+    """Average impact of BVH Build across all technique combinations for each scene."""
+    output_path = os.path.join(OUTPUT_DIR, 'build_aggregated.png')
+    
     scenes = df['scene'].unique()
     x = np.arange(len(scenes))
     width = 0.35
@@ -227,13 +247,13 @@ def plot_bvh_aggregated(df, output_path='build_aggregated.png'):
     
     fig, ax = plt.subplots(figsize=(10, 6))
     bars1 = ax.bar(x - width/2, bvh_on_means, width, yerr=bvh_on_stds, 
-                   label='Build=1 (priemer)', color='green', capsize=5)
+                   label='Build=1 (mean)', color='green', capsize=5)
     bars2 = ax.bar(x + width/2, bvh_off_means, width, yerr=bvh_off_stds,
-                   label='Build=0 (priemer)', color='red', capsize=5)
+                   label='Build=0 (mean)', color='red', capsize=5)
     
-    ax.set_xlabel('Scéna')
-    ax.set_ylabel('Priemerný čas (s)')
-    ax.set_title('Vplyv Build na rýchlosť renderovania (priemer cez všetky kombinácie)', pad=35)
+    ax.set_xlabel('Scene')
+    ax.set_ylabel('Mean Time (s)')
+    ax.set_title('Impact of BVH Build on Rendering Speed (mean across all combinations)', pad=35)
     ax.set_xticks(x)
     ax.set_xticklabels(scenes, rotation=45, ha='right')
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.12), ncol=2, frameon=False)
@@ -249,11 +269,13 @@ def plot_bvh_aggregated(df, output_path='build_aggregated.png'):
                         xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
-def plot_line_by_combination(df, output_path='line_by_combination.png'):
+def plot_line_by_combination(df):
+    """Line plot of rendering time vs combination index for each scene."""
+    output_path = os.path.join(OUTPUT_DIR, 'line_by_combination.png')
+    
     df['combination_idx'] = range(len(df))
     df['combination'] = df.apply(lambda row: 
         f"Build={int(row['bvh'])}, Fit={int(row['dynamic_bvh'])}, SIMD={int(row['simd'])}", axis=1)
@@ -264,12 +286,10 @@ def plot_line_by_combination(df, output_path='line_by_combination.png'):
         scene_df = df[df['scene'] == scene]
         ax.plot(scene_df['combination_idx'], scene_df['time'], marker='o', label=scene, linewidth=2)
     
-    ax.set_xlabel('Poradie kombinácií (podľa zoradenia)')
-    ax.set_ylabel('Čas (s)')
-    ax.set_title('Čas vykreslenia podľa poradia kombinácií', pad=35)
-    
+    ax.set_xlabel('Combination Order (sorted)')
+    ax.set_ylabel('Time (s)')
+    ax.set_title('Rendering Time by Combination Order', pad=35)
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.12), ncol=len(scenes), frameon=False)
-    
     ax.grid(True, alpha=0.3)
     
     all_combs = df['combination'].unique()
@@ -280,11 +300,13 @@ def plot_line_by_combination(df, output_path='line_by_combination.png'):
     ax.set_xticklabels(xticks_labels, rotation=45, ha='right', fontsize=8)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
-def plot_box_by_bvh(df, output_path='box_build.png'):
+def plot_box_by_bvh(df):
+    """Box plot comparing performance with Build=1 vs Build=0 across all combinations."""
+    output_path = os.path.join(OUTPUT_DIR, 'box_build.png')
+    
     data = [df[df['bvh'] == True]['time'].values,
             df[df['bvh'] == False]['time'].values]
     
@@ -294,8 +316,8 @@ def plot_box_by_bvh(df, output_path='box_build.png'):
     bp['boxes'][0].set_facecolor('lightgreen')
     bp['boxes'][1].set_facecolor('lightcoral')
     
-    ax.set_ylabel('Čas (s)')
-    ax.set_title('Porovnanie výkonu: Build=1 vs Build=0 (všetky kombinácie)', pad=35)
+    ax.set_ylabel('Time (s)')
+    ax.set_title('Performance Comparison: Build=1 vs Build=0 (all combinations)', pad=35)
     
     green_patch = mpatches.Patch(color='lightgreen', label='Build=1')
     red_patch = mpatches.Patch(color='lightcoral', label='Build=0')
@@ -308,14 +330,16 @@ def plot_box_by_bvh(df, output_path='box_build.png'):
         ax.scatter(x, vals, alpha=0.5, color=color, s=10)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Graf uložený ako {output_path}")
+    save_both_formats(fig, output_path)
+    plt.close(fig)
 
 def main():
     try:
+        # Create output directory if it doesn't exist
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        
         df = load_benchmark_data()
-        print("Načítané dáta:")
+        print("Loaded data:")
         print(df.head())
         
         plot_technique_comparison(df)
@@ -326,9 +350,9 @@ def main():
         plot_box_by_bvh(df)
         plot_simd_comparison(df)
         
-        print("Všetky grafy boli úspešne vygenerované.")
+        print(f"All graphs successfully generated in '{OUTPUT_DIR}/'.")
     except Exception as e:
-        print(f"Chyba pri generovaní grafov: {e}")
+        print(f"Error generating graphs: {e}")
 
 if __name__ == "__main__":
     main()
