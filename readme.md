@@ -1,5 +1,9 @@
 # Raytracer
 
+## Output Preview
+
+![Output Preview](rt_out.png)
+
 ## Usage
 
 Run the program with:
